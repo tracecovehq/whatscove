@@ -1,0 +1,13 @@
+{
+  "name": "whatscove",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "scan": "node ./src/cli.mjs scan",
+    "watch": "node ./src/cli.mjs watch",
+    "test": "node --test"
+  }
+}
