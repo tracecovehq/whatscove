@@ -1,4 +1,5 @@
 import { WhatsAppSpamGuard, formatScanOutput } from "./bot.mjs";
+import { loadSpamRules } from "./spam-rules.mjs";
 
 function parseArgs(argv) {
   const parsed = {
@@ -9,7 +10,8 @@ function parseArgs(argv) {
     json: false,
     limit: 250,
     lookbackHours: 24,
-    chatFilter: ""
+    chatFilter: "",
+    rulesPath: ""
   };
 
   const [command, ...flags] = argv;
@@ -56,6 +58,12 @@ function parseArgs(argv) {
     if (flag === "--chat") {
       parsed.chatFilter = String(flags[index + 1] ?? "");
       index += 1;
+      continue;
+    }
+
+    if (flag === "--rules") {
+      parsed.rulesPath = String(flags[index + 1] ?? "");
+      index += 1;
     }
   }
 
@@ -64,24 +72,29 @@ function parseArgs(argv) {
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
+  const loadedRules = await loadSpamRules({
+    rulesPath: args.rulesPath || undefined
+  });
   const bot = new WhatsAppSpamGuard({
     minScore: args.minScore,
     pollMs: args.pollMs,
     notify: args.notify,
     limit: args.limit,
     lookbackHours: args.lookbackHours,
-    chatFilter: args.chatFilter
+    chatFilter: args.chatFilter,
+    rules: loadedRules.rules,
+    rulesPath: loadedRules.rulesPath
   });
 
   if (args.command === "watch") {
     console.log(
-      `Watching WhatsApp every ${(args.pollMs / 1000).toFixed(0)}s with minimum score ${args.minScore.toFixed(2)}`
+      `Watching WhatsApp every ${(args.pollMs / 1000).toFixed(0)}s with minimum score ${args.minScore.toFixed(2)} across ${loadedRules.rules.length} spam rule(s)`
     );
 
     await bot.watch((result) => {
       const prefix = `[${new Date().toISOString()}]`;
       if (result.freshMatches.length === 0) {
-        console.log(`${prefix} scan complete, no new stock-spam matches.`);
+        console.log(`${prefix} scan complete, no new spam-rule matches.`);
         return;
       }
 
@@ -100,6 +113,8 @@ async function main() {
         {
           fetchedAt: result.snapshot.fetchedAt,
           databasePath: result.snapshot.databasePath,
+          rulesPath: result.rulesPath,
+          ruleCount: result.ruleCount,
           scannedMessages: result.snapshot.messages.length,
           matchCount: result.matches.length,
           freshMatchCount: result.freshMatches.length,

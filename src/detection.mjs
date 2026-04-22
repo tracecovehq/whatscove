@@ -1,18 +1,7 @@
-const STOCK_SPAM_TEMPLATE = `This is a group for sharing US stock knowledge and information for free. Here, you can view the latest information of various stocks. In order to avoid investment risks and obtain greater returns, you can also learn about the real US stock investment market information here. At the same time, you can also learn more rich investment experience and skills in the group. If you are investing in US stocks, or you are a US stock enthusiast, welcome to join this group`;
+import { loadSpamRules } from "./spam-rules.mjs";
 
 const INVITE_LINK_RE = /\b(?:https?:\/\/)?(?:chat\.whatsapp\.com\/[A-Za-z0-9]+|wa\.me\/\S+)\b/i;
 const URL_RE = /\b(?:https?:\/\/)?(?:chat\.whatsapp\.com\/[A-Za-z0-9]+|wa\.me\/\S+|www\.\S+|\S+\.\S{2,})\b/gi;
-const ANCHOR_PHRASES = [
-  "us stock knowledge",
-  "latest information of various stocks",
-  "avoid investment risks",
-  "greater returns",
-  "real us stock investment market information",
-  "investment experience and skills",
-  "investing in us stocks",
-  "us stock enthusiast",
-  "welcome to join this group"
-];
 
 function stripUrls(text) {
   return text.replace(URL_RE, " ");
@@ -74,27 +63,32 @@ function jaccardSimilarity(left, right) {
   return union === 0 ? 0 : intersection / union;
 }
 
-function phraseHits(text) {
+function phraseHits(text, anchorPhrases) {
   const normalized = normalizeText(text);
-  return ANCHOR_PHRASES.filter((phrase) => normalized.includes(normalizeText(phrase)));
+  return anchorPhrases.filter((phrase) => normalized.includes(normalizeText(phrase)));
 }
 
-export function detectStockSpam(text, options = {}) {
+export function scoreTextAgainstRule(text, rule, options = {}) {
   const trimmed = typeof text === "string" ? text.trim() : "";
   if (!trimmed) {
     return {
       matched: false,
       score: 0,
-      reasons: []
+      reasons: [],
+      ruleId: rule?.id,
+      ruleLabel: rule?.label
     };
   }
 
-  const minScore = Number(options.minScore ?? 0.72);
+  const minScore = Number(options.minScore ?? rule?.minScore ?? 0.72);
   const hasInviteLink = INVITE_LINK_RE.test(trimmed);
-  const tokenCoverage = overlapRatio(trimmed, STOCK_SPAM_TEMPLATE);
-  const charSimilarity = jaccardSimilarity(trimmed, STOCK_SPAM_TEMPLATE);
-  const matchedPhrases = phraseHits(trimmed);
-  const phraseCoverage = matchedPhrases.length / ANCHOR_PHRASES.length;
+  const tokenCoverage = overlapRatio(trimmed, rule.template);
+  const charSimilarity = jaccardSimilarity(trimmed, rule.template);
+  const matchedPhrases = phraseHits(trimmed, rule.anchorPhrases ?? []);
+  const phraseCoverage =
+    matchedPhrases.length === 0 || (rule.anchorPhrases ?? []).length === 0
+      ? 0
+      : matchedPhrases.length / rule.anchorPhrases.length;
   const score = Math.min(
     0.99,
     tokenCoverage * 0.55 +
@@ -104,34 +98,77 @@ export function detectStockSpam(text, options = {}) {
   );
 
   const matched =
-    score >= minScore ||
+    (!rule.requireInviteLink || hasInviteLink) &&
+    (score >= minScore ||
     tokenCoverage >= 0.8 ||
     (tokenCoverage >= 0.62 && matchedPhrases.length >= 4) ||
     (tokenCoverage >= 0.55 && matchedPhrases.length >= 5 && hasInviteLink) ||
-    (tokenCoverage >= 0.5 && matchedPhrases.length >= 4 && hasInviteLink);
+    (tokenCoverage >= 0.5 && matchedPhrases.length >= 4 && hasInviteLink));
 
   const reasons = [];
   if (hasInviteLink) {
     reasons.push("contains a WhatsApp invite link");
   }
   if (tokenCoverage >= 0.55) {
-    reasons.push(`covers ${(tokenCoverage * 100).toFixed(0)}% of the known stock-spam vocabulary`);
+    reasons.push(`covers ${(tokenCoverage * 100).toFixed(0)}% of the known ${rule.label.toLowerCase()} vocabulary`);
   }
   if (matchedPhrases.length > 0) {
-    reasons.push(`matches ${matchedPhrases.length} stock-promo anchor phrase(s)`);
+    reasons.push(`matches ${matchedPhrases.length} ${rule.label.toLowerCase()} anchor phrase(s)`);
+  }
+  if (rule.requireInviteLink) {
+    reasons.push("rule prefers messages that include an invite link");
   }
 
   return {
     matched,
     score,
     reasons,
+    ruleId: rule.id,
+    ruleLabel: rule.label,
     details: {
       hasInviteLink,
       tokenCoverage,
       charSimilarity,
-      matchedPhrases
+      matchedPhrases,
+      ruleId: rule.id,
+      ruleLabel: rule.label,
+      tags: rule.tags ?? []
     }
   };
+}
+
+let cachedDefaultRulesPromise;
+
+export async function getDefaultSpamRules() {
+  cachedDefaultRulesPromise ||= loadSpamRules();
+  const loaded = await cachedDefaultRulesPromise;
+  return loaded.rules;
+}
+
+export async function detectSpam(text, options = {}) {
+  const rules = options.rules ?? (await getDefaultSpamRules());
+  let bestResult = null;
+
+  for (const rule of rules) {
+    const result = scoreTextAgainstRule(text, rule, options);
+    if (!bestResult || result.score > bestResult.score) {
+      bestResult = result;
+    }
+  }
+
+  return (
+    bestResult ?? {
+      matched: false,
+      score: 0,
+      reasons: []
+    }
+  );
+}
+
+export async function detectStockSpam(text, options = {}) {
+  const rules = options.rules ?? (await getDefaultSpamRules());
+  const stockRule = rules.find((rule) => rule.id === "us-stock-group-invite") ?? rules[0];
+  return scoreTextAgainstRule(text, stockRule, options);
 }
 
 export function createTextCandidates(row) {
@@ -142,5 +179,3 @@ export function createTextCandidates(row) {
 
   return [...new Set(values)];
 }
-
-export { STOCK_SPAM_TEMPLATE };

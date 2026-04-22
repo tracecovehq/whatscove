@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "rules": [
+    {
+      "id": "us-stock-group-invite",
+      "label": "US stock promo invite",
+      "template": "This is a group for sharing US stock knowledge and information for free. Here, you can view the latest information of various stocks. In order to avoid investment risks and obtain greater returns, you can also learn about the real US stock investment market information here. At the same time, you can also learn more rich investment experience and skills in the group. If you are investing in US stocks, or you are a US stock enthusiast, welcome to join this group",
+      "anchorPhrases": [
+        "us stock knowledge",
+        "latest information of various stocks",
+        "avoid investment risks",
+        "greater returns",
+        "real us stock investment market information",
+        "investment experience and skills",
+        "investing in us stocks",
+        "us stock enthusiast",
+        "welcome to join this group"
+      ],
+      "minScore": 0.72,
+      "requireInviteLink": false,
+      "tags": [
+        "stocks",
+        "group-invite",
+        "promo"
+      ]
+    }
+  ]
+}

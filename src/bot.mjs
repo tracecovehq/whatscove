@@ -4,7 +4,7 @@ import { promisify } from "node:util";
 import { mkdir, appendFile, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
-import { createTextCandidates, detectStockSpam } from "./detection.mjs";
+import { createTextCandidates, detectSpam } from "./detection.mjs";
 import { fetchRecentMessages } from "./whatsapp-db.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -20,8 +20,9 @@ function buildFingerprint(record) {
     .slice(0, 12);
 }
 
-export function findSuspiciousEntries(snapshot, options = {}) {
+export async function findSuspiciousEntries(snapshot, options = {}) {
   const minScore = Number(options.minScore ?? 0.72);
+  const rules = options.rules ?? [];
   const matches = [];
 
   for (const row of snapshot.messages ?? []) {
@@ -34,7 +35,7 @@ export function findSuspiciousEntries(snapshot, options = {}) {
     });
 
     for (const text of candidates) {
-      const result = detectStockSpam(text, { minScore });
+      const result = await detectSpam(text, { minScore, rules });
       if (!result.matched) {
         continue;
       }
@@ -43,6 +44,7 @@ export function findSuspiciousEntries(snapshot, options = {}) {
         fingerprint: buildFingerprint({
           chatName: row.chatName,
           senderName: row.senderName,
+          ruleId: result.ruleId,
           text
         }),
         messagePk: row.messagePk,
@@ -52,6 +54,8 @@ export function findSuspiciousEntries(snapshot, options = {}) {
         fromJid: row.fromJid,
         messageType: row.messageType,
         messageTimeLocal: row.messageTimeLocal,
+        ruleId: result.ruleId,
+        ruleLabel: result.ruleLabel,
         text,
         score: Number(result.score.toFixed(3)),
         reasons: result.reasons,
@@ -69,7 +73,7 @@ async function ensureDataDir() {
 
 function buildNotificationScript(match) {
   const title = "WhatsCove";
-  const subtitle = match.description || match.name || "Suspicious stock spam detected";
+  const subtitle = match.ruleLabel || "Suspicious spam detected";
   const body = match.text.slice(0, 140);
 
   const escape = (value) => String(value).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
@@ -114,7 +118,7 @@ async function writeArtifacts(snapshot, matches) {
 
 function summarizeMatch(match) {
   return [
-    `[score ${match.score.toFixed(3)}] ${match.chatName || "unknown chat"} | ${match.senderName || match.fromJid || "unknown sender"} | ${match.messageTimeLocal || "unknown time"}`,
+    `[score ${match.score.toFixed(3)}] ${match.ruleLabel || "spam rule"} | ${match.chatName || "unknown chat"} | ${match.senderName || match.fromJid || "unknown sender"} | ${match.messageTimeLocal || "unknown time"}`,
     `text: ${match.text}`,
     `why: ${match.reasons.join("; ")}`
   ].join("\n");
@@ -128,7 +132,9 @@ export class WhatsAppSpamGuard {
       notify: options.notify !== false,
       limit: Number(options.limit ?? 250),
       lookbackHours: Number(options.lookbackHours ?? 24),
-      chatFilter: options.chatFilter ?? ""
+      chatFilter: options.chatFilter ?? "",
+      rules: options.rules ?? [],
+      rulesPath: options.rulesPath ?? ""
     };
     this.seenFingerprints = new Set();
     this.lastSeenMessagePk = Number(options.afterPk ?? 0);
@@ -141,8 +147,9 @@ export class WhatsAppSpamGuard {
       lookbackHours: this.options.lookbackHours,
       chatFilter: this.options.chatFilter
     });
-    const matches = findSuspiciousEntries(snapshot, {
-      minScore: this.options.minScore
+    const matches = await findSuspiciousEntries(snapshot, {
+      minScore: this.options.minScore,
+      rules: this.options.rules
     });
     const maxSeenPk = snapshot.messages.reduce(
       (highest, message) => Math.max(highest, Number(message.messagePk || 0)),
@@ -166,7 +173,9 @@ export class WhatsAppSpamGuard {
     return {
       snapshot,
       matches,
-      freshMatches
+      freshMatches,
+      rulesPath: this.options.rulesPath,
+      ruleCount: this.options.rules.length
     };
   }
 
@@ -183,7 +192,7 @@ export class WhatsAppSpamGuard {
 
 export function formatScanOutput(result) {
   if (result.matches.length === 0) {
-    return "No suspicious stock-spam messages were detected in the recent WhatsApp message database scan.";
+    return "No suspicious messages matched the active spam rules in the recent WhatsApp message database scan.";
   }
 
   return result.matches.map(summarizeMatch).join("\n\n");

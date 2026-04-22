@@ -1,6 +1,30 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { detectStockSpam, normalizeText, STOCK_SPAM_TEMPLATE } from "../src/detection.mjs";
+import { mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { detectSpam, detectStockSpam, normalizeText, getDefaultSpamRules } from "../src/detection.mjs";
+import { loadSpamRules } from "../src/spam-rules.mjs";
+
+const STOCK_SPAM_TEMPLATE = "This is a group for sharing US stock knowledge and information for free. Here, you can view the latest information of various stocks. In order to avoid investment risks and obtain greater returns, you can also learn about the real US stock investment market information here. At the same time, you can also learn more rich investment experience and skills in the group. If you are investing in US stocks, or you are a US stock enthusiast, welcome to join this group";
+
+const CUSTOM_RULES = [
+  {
+    id: "crypto-signal-promo",
+    label: "Crypto signal promo",
+    template:
+      "Join our free crypto signal team to get the latest bitcoin and altcoin trading signals, market updates, and profit strategies every day.",
+    anchorPhrases: [
+      "free crypto signal team",
+      "latest bitcoin and altcoin trading signals",
+      "market updates",
+      "profit strategies every day"
+    ],
+    minScore: 0.68,
+    requireInviteLink: true,
+    tags: ["crypto", "promo"]
+  }
+];
 
 test("normalizeText strips links and punctuation", () => {
   assert.equal(
@@ -9,8 +33,8 @@ test("normalizeText strips links and punctuation", () => {
   );
 });
 
-test("detectStockSpam matches the exact stock spam template with a WhatsApp link", () => {
-  const result = detectStockSpam(
+test("detectStockSpam matches the exact stock spam template with a WhatsApp link", async () => {
+  const result = await detectStockSpam(
     `${STOCK_SPAM_TEMPLATE} https://chat.whatsapp.com/BDcmXzyI8k17STFbj3ruZ`
   );
 
@@ -18,8 +42,8 @@ test("detectStockSpam matches the exact stock spam template with a WhatsApp link
   assert.ok(result.score >= 0.9);
 });
 
-test("detectStockSpam matches a paraphrased stock spam pitch", () => {
-  const result = detectStockSpam(
+test("detectStockSpam matches a paraphrased stock spam pitch", async () => {
+  const result = await detectStockSpam(
     "Free US stock knowledge group. Learn the latest stock information, avoid investment risks, get greater returns, and pick up more investment experience and skills here. If you invest in US stocks, welcome to join our group: https://chat.whatsapp.com/XYZ"
   );
 
@@ -27,11 +51,46 @@ test("detectStockSpam matches a paraphrased stock spam pitch", () => {
   assert.ok(result.details.matchedPhrases.length >= 4);
 });
 
-test("detectStockSpam ignores normal community chatter", () => {
-  const result = detectStockSpam(
+test("detectStockSpam ignores normal community chatter", async () => {
+  const result = await detectStockSpam(
     "Hey everyone, tomorrow's East Bay meetup starts at 6:30 PM in Oakland. Bring a jacket because it will be chilly after sunset."
   );
 
   assert.equal(result.matched, false);
   assert.ok(result.score < 0.5);
+});
+
+test("detectSpam uses the best match from a dynamic rule list", async () => {
+  const result = await detectSpam(
+    "Join our free crypto signal team for the latest bitcoin and altcoin trading signals, market updates, and profit strategies every day: https://chat.whatsapp.com/abc123",
+    { rules: CUSTOM_RULES }
+  );
+
+  assert.equal(result.matched, true);
+  assert.equal(result.ruleId, "crypto-signal-promo");
+  assert.equal(result.ruleLabel, "Crypto signal promo");
+});
+
+test("default spam rules load from config", async () => {
+  const rules = await getDefaultSpamRules();
+  assert.ok(rules.length >= 1);
+  assert.equal(rules[0].id, "us-stock-group-invite");
+});
+
+test("loadSpamRules reads a custom dynamic rules file", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "whatscove-rules-"));
+  const rulesPath = path.join(tempDir, "spam-rules.json");
+
+  await writeFile(
+    rulesPath,
+    JSON.stringify({
+      version: 1,
+      rules: CUSTOM_RULES
+    })
+  );
+
+  const loaded = await loadSpamRules({ rulesPath });
+  assert.equal(loaded.rulesPath, rulesPath);
+  assert.equal(loaded.rules.length, 1);
+  assert.equal(loaded.rules[0].id, "crypto-signal-promo");
 });
