@@ -79,8 +79,24 @@ test("detectStockSpam is safe when given an empty rules list", async () => {
 
 test("default spam rules load from config", async () => {
   const rules = await getDefaultSpamRules();
-  assert.ok(rules.length >= 1);
+  assert.ok(rules.length >= 3);
   assert.equal(rules[0]?.id, "us-stock-group-invite");
+});
+
+test("default rules detect the short cedar lantern trigger phrase", async () => {
+  const result = await detectSpam("Cedar lantern signal: blue harbor seven");
+
+  assert.equal(result.matched, true);
+  assert.equal(result.ruleId, "cedar-lantern-signal");
+});
+
+test("default rules detect the longer blue harbor spam-like phrase", async () => {
+  const result = await detectSpam(
+    "Blue Harbor Seven is a private signal group for free market updates. Join now."
+  );
+
+  assert.equal(result.matched, true);
+  assert.equal(result.ruleId, "blue-harbor-signal-group");
 });
 
 test("loadSpamRules reads a custom dynamic rules file", async () => {

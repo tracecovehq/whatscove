@@ -23,6 +23,38 @@
         "group-invite",
         "promo"
       ]
+    },
+    {
+      "id": "cedar-lantern-signal",
+      "label": "Cedar lantern trigger",
+      "template": "Cedar lantern signal blue harbor seven",
+      "anchorPhrases": [
+        "cedar lantern signal",
+        "blue harbor seven"
+      ],
+      "minScore": 0.8,
+      "requireInviteLink": false,
+      "tags": [
+        "test",
+        "short-trigger"
+      ]
+    },
+    {
+      "id": "blue-harbor-signal-group",
+      "label": "Blue Harbor signal group",
+      "template": "Blue Harbor Seven is a private signal group for free market updates. Join now.",
+      "anchorPhrases": [
+        "blue harbor seven",
+        "private signal group",
+        "free market updates",
+        "join now"
+      ],
+      "minScore": 0.78,
+      "requireInviteLink": false,
+      "tags": [
+        "test",
+        "long-trigger"
+      ]
     }
   ]
 }
