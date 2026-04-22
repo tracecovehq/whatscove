@@ -1,6 +1,7 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
+import { readStructuredConfig, writeStructuredConfig } from "./config-format.ts";
 import type {
   AddSpamRuleInput,
   AppendSpamRuleResult,
@@ -14,7 +15,7 @@ interface SpamRulesDocument {
 }
 
 const PACKAGE_ROOT = fileURLToPath(new URL("..", import.meta.url));
-export const DEFAULT_RULES_PATH = path.join(PACKAGE_ROOT, "config", "spam-rules.json");
+export const DEFAULT_RULES_BASE_PATH = path.join(PACKAGE_ROOT, "config", "spam-rules");
 
 function asNonEmptyString(value: unknown, fieldName: string, ruleId = "unknown-rule"): string {
   if (typeof value !== "string" || value.trim().length === 0) {
@@ -64,12 +65,8 @@ function normalizeRule(rawRule: Partial<SpamRule> & Record<string, unknown>, ind
 
 async function readRulesDocument(rulesPath: string): Promise<SpamRulesDocument> {
   try {
-    const rawText = await readFile(rulesPath, "utf8");
-    try {
-      return JSON.parse(rawText) as SpamRulesDocument;
-    } catch (error) {
-      throw new Error(`Failed to parse spam rules at ${rulesPath}: ${(error as Error).message}`);
-    }
+    const { data } = await readStructuredConfig<SpamRulesDocument>(DEFAULT_RULES_BASE_PATH, rulesPath);
+    return data;
   } catch (error) {
     const fileError = error as NodeJS.ErrnoException;
     if (fileError.code === "ENOENT") {
@@ -84,11 +81,14 @@ async function readRulesDocument(rulesPath: string): Promise<SpamRulesDocument> 
 }
 
 export async function loadSpamRules(options: { rulesPath?: string } = {}): Promise<LoadSpamRulesResult> {
-  const rulesPath = options.rulesPath || DEFAULT_RULES_PATH;
-  const parsed = await readRulesDocument(rulesPath);
+  const { configPath } = await readStructuredConfig<SpamRulesDocument>(
+    DEFAULT_RULES_BASE_PATH,
+    options.rulesPath
+  );
+  const parsed = await readRulesDocument(configPath);
 
   if (!Array.isArray(parsed.rules) || parsed.rules.length === 0) {
-    throw new Error(`Spam rules at ${rulesPath} must contain a non-empty "rules" array.`);
+    throw new Error(`Spam rules at ${configPath} must contain a non-empty "rules" array.`);
   }
 
   const rules = parsed.rules.map((rule, index) =>
@@ -96,7 +96,7 @@ export async function loadSpamRules(options: { rulesPath?: string } = {}): Promi
   );
 
   return {
-    rulesPath,
+    rulesPath: configPath,
     rules
   };
 }
@@ -129,13 +129,29 @@ export async function appendSpamRule(
   input: AddSpamRuleInput,
   options: { rulesPath?: string } = {}
 ): Promise<AppendSpamRuleResult> {
-  const rulesPath = options.rulesPath || DEFAULT_RULES_PATH;
-  const document = await readRulesDocument(rulesPath);
+  const { configPath } = await readStructuredConfig<SpamRulesDocument>(
+    DEFAULT_RULES_BASE_PATH,
+    options.rulesPath
+  ).catch((error) => {
+    const fileError = error as NodeJS.ErrnoException;
+    if (fileError.code === "ENOENT") {
+      return {
+        configPath: options.rulesPath || `${DEFAULT_RULES_BASE_PATH}.json`,
+        format: "json" as const,
+        data: {
+          version: 1,
+          rules: []
+        }
+      };
+    }
+    throw error;
+  });
+  const document = await readRulesDocument(configPath);
   const rules = Array.isArray(document.rules) ? document.rules : [];
   const rule = buildSpamRule(input);
 
   if (rules.some((existingRule) => (existingRule as Partial<SpamRule>)?.id === rule.id)) {
-    throw new Error(`Spam rules at ${rulesPath} already contain a rule with id "${rule.id}".`);
+    throw new Error(`Spam rules at ${configPath} already contain a rule with id "${rule.id}".`);
   }
 
   const nextDocument = {
@@ -143,11 +159,11 @@ export async function appendSpamRule(
     rules: [...rules, rule]
   };
 
-  await mkdir(path.dirname(rulesPath), { recursive: true });
-  await writeFile(rulesPath, `${JSON.stringify(nextDocument, null, 2)}\n`);
+  await mkdir(path.dirname(configPath), { recursive: true });
+  await writeStructuredConfig(configPath, nextDocument);
 
   return {
-    rulesPath,
+    rulesPath: configPath,
     rule,
     ruleCount: nextDocument.rules.length
   };

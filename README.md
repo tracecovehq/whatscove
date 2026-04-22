@@ -21,7 +21,7 @@ It can also auto-moderate matches through a moderation policy: queue moderation 
 
 ## Rules
 
-The default rules live in [config/spam-rules.json](/Users/jlukanta/Projects/tracecove/whatscove/config/spam-rules.json).
+The default rules live in [config/spam-rules.json](/Users/jlukanta/Projects/tracecove/whatscove/config/spam-rules.json), and WhatsCove also supports `spam-rules.yaml` / `spam-rules.yml`.
 
 Each rule can define:
 
@@ -33,11 +33,11 @@ Each rule can define:
 - `requireInviteLink`: optional flag for invite-link-heavy spam
 - `tags`: optional metadata for downstream automation
 
-You can add as many rules as you want to that file, or point the CLI at a different JSON file with the same shape.
+You can add as many rules as you want to that file, or point the CLI at a different JSON or YAML file with the same shape.
 
 ## Moderation
 
-The default moderation policy lives in [config/moderation-policy.json](/Users/jlukanta/Projects/tracecove/whatscove/config/moderation-policy.json).
+The default moderation policy lives in [config/moderation-policy.json](/Users/jlukanta/Projects/tracecove/whatscove/config/moderation-policy.json), and WhatsCove also supports `moderation-policy.yaml` / `moderation-policy.yml`.
 
 Supported moderation actions:
 
@@ -132,7 +132,9 @@ Useful flags:
 - `--chat "East Bay"` limits the scan to one community or group name.
 - `--lookback-hours 6` restricts the initial scan window.
 - `--rules /absolute/path/to/spam-rules.json` loads a custom dynamic rule list.
+- `--rules /absolute/path/to/spam-rules.yaml` also works for YAML rule files.
 - `--moderation-policy /absolute/path/to/moderation-policy.json` loads a moderation policy.
+- `--moderation-policy /absolute/path/to/moderation-policy.yaml` also works for YAML policy files.
 - `--moderation-mode detect|queue|apply` controls whether matches just log, queue, or execute moderation actions.
 - `add-rule --label ... --template ...` appends a new rule without hand-editing JSON.
 
@@ -141,5 +143,6 @@ Useful flags:
 - This is a desktop-side detector, not an official server-side WhatsApp bot.
 - By default it scans recent inbound WhatsApp messages from the local database, then watches only newly inserted rows on subsequent polls.
 - The default rule pack is just a starting point. The intended workflow is to keep growing the rule list as new spam patterns appear.
+- If both YAML and JSON versions of the same config exist, WhatsCove prefers YAML automatically.
 - The safest default for moderation is `queue`, which records removal/ban decisions without executing destructive WhatsApp-side actions.
 - The codebase now uses TypeScript source files and relies on Node's built-in strip-types runtime flag instead of a separate build step.

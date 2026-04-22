@@ -1,6 +1,6 @@
-import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
+import { readStructuredConfig } from "./config-format.ts";
 import type {
   ModerationActionType,
   ModerationPolicy,
@@ -8,10 +8,10 @@ import type {
 } from "./types.ts";
 
 const PACKAGE_ROOT = fileURLToPath(new URL("..", import.meta.url));
-export const DEFAULT_MODERATION_POLICY_PATH = path.join(
+export const DEFAULT_MODERATION_POLICY_BASE_PATH = path.join(
   PACKAGE_ROOT,
   "config",
-  "moderation-policy.json"
+  "moderation-policy"
 );
 
 const VALID_ACTIONS: ModerationActionType[] = [
@@ -44,17 +44,11 @@ function normalizeOverride(input: unknown, fallbackActions: ModerationActionType
 export async function loadModerationPolicy(
   options: { policyPath?: string } = {}
 ): Promise<ModerationPolicy> {
-  const policyPath = options.policyPath || DEFAULT_MODERATION_POLICY_PATH;
-  const rawText = await readFile(policyPath, "utf8");
-  let parsed: Record<string, unknown>;
-
-  try {
-    parsed = JSON.parse(rawText) as Record<string, unknown>;
-  } catch (error) {
-    throw new Error(
-      `Failed to parse moderation policy at ${policyPath}: ${(error as Error).message}`
-    );
-  }
+  const { configPath, data } = await readStructuredConfig<Record<string, unknown>>(
+    DEFAULT_MODERATION_POLICY_BASE_PATH,
+    options.policyPath
+  );
+  const parsed = data;
 
   const defaultActions = normalizeActions(parsed.actions, [
     "delete_message",
@@ -75,7 +69,7 @@ export async function loadModerationPolicy(
   );
 
   return {
-    policyPath,
+    policyPath: configPath,
     enabled: parsed.enabled !== false,
     mode:
       parsed.mode === "apply" || parsed.mode === "detect" || parsed.mode === "queue"

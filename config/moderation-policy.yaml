@@ -1,0 +1,16 @@
+version: 1
+enabled: true
+mode: queue
+actions:
+  - delete_message
+  - remove_sender
+  - ban_sender_local
+ignoreLocallyBannedUsers: true
+hookCommand: ""
+perRule:
+  cedar-lantern-signal:
+    actions:
+      - notify
+  blue-harbor-signal-group:
+    actions:
+      - notify

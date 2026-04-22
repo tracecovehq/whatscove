@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -133,6 +133,33 @@ test("loadSpamRules reads a custom dynamic rules file", async () => {
   assert.equal(loaded.rules[0]?.id, "crypto-signal-promo");
 });
 
+test("loadSpamRules reads a YAML rules file", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "whatscove-rules-yaml-"));
+  const rulesPath = path.join(tempDir, "spam-rules.yaml");
+
+  await writeFile(
+    rulesPath,
+    [
+      "version: 1",
+      "rules:",
+      "  - id: crypto-signal-promo",
+      "    label: Crypto signal promo",
+      "    template: Join our free crypto signal team for daily calls.",
+      "    anchorPhrases:",
+      "      - free crypto signal team",
+      "      - daily calls",
+      "    requireInviteLink: true",
+      "    tags:",
+      "      - crypto"
+    ].join("\n")
+  );
+
+  const loaded = await loadSpamRules({ rulesPath });
+  assert.equal(loaded.rulesPath, rulesPath);
+  assert.equal(loaded.rules.length, 1);
+  assert.equal(loaded.rules[0]?.id, "crypto-signal-promo");
+});
+
 test("buildSpamRule generates a usable id from the label", () => {
   const rule = buildSpamRule({
     label: "Forex VIP Invite",
@@ -162,6 +189,28 @@ test("appendSpamRule appends to a custom rules file", async () => {
   assert.equal(loaded.rules.length, 1);
   assert.equal(loaded.rules[0]?.id, "forex-vip-invite");
   assert.deepEqual(loaded.rules[0]?.tags, ["forex"]);
+});
+
+test("appendSpamRule preserves YAML when appending to a YAML rules file", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "whatscove-append-yaml-"));
+  const rulesPath = path.join(tempDir, "spam-rules.yaml");
+
+  await writeFile(rulesPath, "version: 1\nrules: []\n");
+
+  const result = await appendSpamRule(
+    {
+      label: "YAML Forex Invite",
+      template: "Join our forex room.",
+      tags: ["forex"]
+    },
+    { rulesPath }
+  );
+
+  assert.equal(result.rulesPath, rulesPath);
+
+  const raw = await readFile(rulesPath, "utf8");
+  assert.match(raw, /^---/m);
+  assert.match(raw, /label: YAML Forex Invite/);
 });
 
 test("appendSpamRule rejects duplicate ids", async () => {
@@ -196,6 +245,33 @@ test("loadModerationPolicy loads the default moderation config", async () => {
   assert.equal(policy.enabled, true);
   assert.equal(policy.mode, "queue");
   assert.ok(policy.actions.includes("delete_message"));
+});
+
+test("loadModerationPolicy reads a YAML moderation config", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "whatscove-mod-yaml-"));
+  const policyPath = path.join(tempDir, "moderation-policy.yaml");
+
+  await writeFile(
+    policyPath,
+    [
+      "version: 1",
+      "enabled: true",
+      "mode: apply",
+      "actions:",
+      "  - notify",
+      "ignoreLocallyBannedUsers: true",
+      "hookCommand: echo moderation",
+      "perRule:",
+      "  cedar-lantern-signal:",
+      "    actions:",
+      "      - notify"
+    ].join("\n")
+  );
+
+  const policy = await loadModerationPolicy({ policyPath });
+  assert.equal(policy.policyPath, policyPath);
+  assert.equal(policy.mode, "apply");
+  assert.deepEqual(policy.actions, ["notify"]);
 });
 
 test("planModerationDecisions creates queued actions for real spam matches", () => {
