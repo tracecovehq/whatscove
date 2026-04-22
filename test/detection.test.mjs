@@ -4,7 +4,7 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { detectSpam, detectStockSpam, normalizeText, getDefaultSpamRules } from "../src/detection.mjs";
-import { loadSpamRules } from "../src/spam-rules.mjs";
+import { appendSpamRule, buildSpamRule, loadSpamRules } from "../src/spam-rules.mjs";
 
 const STOCK_SPAM_TEMPLATE = "This is a group for sharing US stock knowledge and information for free. Here, you can view the latest information of various stocks. In order to avoid investment risks and obtain greater returns, you can also learn about the real US stock investment market information here. At the same time, you can also learn more rich investment experience and skills in the group. If you are investing in US stocks, or you are a US stock enthusiast, welcome to join this group";
 
@@ -93,4 +93,61 @@ test("loadSpamRules reads a custom dynamic rules file", async () => {
   assert.equal(loaded.rulesPath, rulesPath);
   assert.equal(loaded.rules.length, 1);
   assert.equal(loaded.rules[0].id, "crypto-signal-promo");
+});
+
+test("buildSpamRule generates a usable id from the label", () => {
+  const rule = buildSpamRule({
+    label: "Forex VIP Invite",
+    template: "Join our forex VIP room for free market calls."
+  });
+
+  assert.equal(rule.id, "forex-vip-invite");
+});
+
+test("appendSpamRule appends to a custom rules file", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "whatscove-append-"));
+  const rulesPath = path.join(tempDir, "spam-rules.json");
+
+  const result = await appendSpamRule(
+    {
+      label: "Forex VIP Invite",
+      template: "Join our forex VIP room for free market calls.",
+      anchorPhrases: ["forex vip room", "free market calls"],
+      tags: ["forex"]
+    },
+    { rulesPath }
+  );
+
+  assert.equal(result.ruleCount, 1);
+
+  const loaded = await loadSpamRules({ rulesPath });
+  assert.equal(loaded.rules.length, 1);
+  assert.equal(loaded.rules[0].id, "forex-vip-invite");
+  assert.deepEqual(loaded.rules[0].tags, ["forex"]);
+});
+
+test("appendSpamRule rejects duplicate ids", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "whatscove-duplicate-"));
+  const rulesPath = path.join(tempDir, "spam-rules.json");
+
+  await appendSpamRule(
+    {
+      id: "duplicate-rule",
+      label: "First label",
+      template: "First template"
+    },
+    { rulesPath }
+  );
+
+  await assert.rejects(
+    appendSpamRule(
+      {
+        id: "duplicate-rule",
+        label: "Second label",
+        template: "Second template"
+      },
+      { rulesPath }
+    ),
+    /already contain a rule with id/
+  );
 });

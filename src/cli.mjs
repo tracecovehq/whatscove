@@ -1,22 +1,33 @@
 import { WhatsAppSpamGuard, formatScanOutput } from "./bot.mjs";
-import { loadSpamRules } from "./spam-rules.mjs";
+import { appendSpamRule, loadSpamRules } from "./spam-rules.mjs";
 
 function parseArgs(argv) {
   const parsed = {
     command: "scan",
-    minScore: 0.72,
+    minScore: undefined,
     pollMs: 30_000,
     notify: true,
     json: false,
     limit: 250,
     lookbackHours: 24,
     chatFilter: "",
-    rulesPath: ""
+    rulesPath: "",
+    ruleId: "",
+    ruleLabel: "",
+    template: "",
+    templateFile: "",
+    anchorPhrases: [],
+    tags: [],
+    requireInviteLink: false
   };
 
-  const [command, ...flags] = argv;
-  if (command === "scan" || command === "watch") {
-    parsed.command = command;
+  const [firstArg, ...restArgs] = argv;
+  const hasExplicitCommand =
+    firstArg === "scan" || firstArg === "watch" || firstArg === "add-rule";
+  const flags = hasExplicitCommand ? restArgs : argv;
+
+  if (hasExplicitCommand) {
+    parsed.command = firstArg;
   }
 
   for (let index = 0; index < flags.length; index += 1) {
@@ -64,19 +75,92 @@ function parseArgs(argv) {
     if (flag === "--rules") {
       parsed.rulesPath = String(flags[index + 1] ?? "");
       index += 1;
+      continue;
+    }
+
+    if (flag === "--id") {
+      parsed.ruleId = String(flags[index + 1] ?? "");
+      index += 1;
+      continue;
+    }
+
+    if (flag === "--label") {
+      parsed.ruleLabel = String(flags[index + 1] ?? "");
+      index += 1;
+      continue;
+    }
+
+    if (flag === "--template") {
+      parsed.template = String(flags[index + 1] ?? "");
+      index += 1;
+      continue;
+    }
+
+    if (flag === "--template-file") {
+      parsed.templateFile = String(flags[index + 1] ?? "");
+      index += 1;
+      continue;
+    }
+
+    if (flag === "--anchor") {
+      parsed.anchorPhrases.push(String(flags[index + 1] ?? ""));
+      index += 1;
+      continue;
+    }
+
+    if (flag === "--tag") {
+      parsed.tags.push(String(flags[index + 1] ?? ""));
+      index += 1;
+      continue;
+    }
+
+    if (flag === "--require-invite-link") {
+      parsed.requireInviteLink = true;
     }
   }
 
   return parsed;
 }
 
+async function readTemplateText(args) {
+  if (args.templateFile) {
+    const { readFile } = await import("node:fs/promises");
+    return readFile(args.templateFile, "utf8");
+  }
+
+  return args.template;
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
+
+  if (args.command === "add-rule") {
+    const template = await readTemplateText(args);
+    const result = await appendSpamRule(
+      {
+        id: args.ruleId || undefined,
+        label: args.ruleLabel,
+        template,
+        anchorPhrases: args.anchorPhrases,
+        minScore: typeof args.minScore === "number" ? args.minScore : undefined,
+        requireInviteLink: args.requireInviteLink,
+        tags: args.tags
+      },
+      {
+        rulesPath: args.rulesPath || undefined
+      }
+    );
+
+    console.log(`Added rule "${result.rule.label}" (${result.rule.id}) to ${result.rulesPath}`);
+    console.log(`Rules in file: ${result.ruleCount}`);
+    return;
+  }
+
   const loadedRules = await loadSpamRules({
     rulesPath: args.rulesPath || undefined
   });
   const bot = new WhatsAppSpamGuard({
-    minScore: args.minScore,
+    minScore: args.minScore ?? 0.72,
     pollMs: args.pollMs,
     notify: args.notify,
     limit: args.limit,
@@ -88,7 +172,7 @@ async function main() {
 
   if (args.command === "watch") {
     console.log(
-      `Watching WhatsApp every ${(args.pollMs / 1000).toFixed(0)}s with minimum score ${args.minScore.toFixed(2)} across ${loadedRules.rules.length} spam rule(s)`
+      `Watching WhatsApp every ${(args.pollMs / 1000).toFixed(0)}s with minimum score ${(args.minScore ?? 0.72).toFixed(2)} across ${loadedRules.rules.length} spam rule(s)`
     );
 
     await bot.watch((result) => {

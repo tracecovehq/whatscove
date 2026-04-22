@@ -55,6 +55,29 @@ cd /Users/jlukanta/Projects/tracecove/whatscove
 node ./src/cli.mjs watch --poll-seconds 20
 ```
 
+Append a new spam rule from the terminal:
+
+```bash
+cd /Users/jlukanta/Projects/tracecove/whatscove
+node ./src/cli.mjs add-rule \
+  --label "Crypto signal promo" \
+  --template "Join our free crypto signal team for daily bitcoin calls and market updates" \
+  --anchor "free crypto signal team" \
+  --anchor "daily bitcoin calls" \
+  --tag crypto \
+  --require-invite-link
+```
+
+For long spam bodies, keep the template in a text file:
+
+```bash
+node ./src/cli.mjs add-rule \
+  --label "Stock invite variant" \
+  --template-file /absolute/path/to/template.txt \
+  --anchor "us stock knowledge" \
+  --anchor "greater returns"
+```
+
 Useful flags:
 
 - `--min-score 0.80` makes the detector stricter.
@@ -63,6 +86,7 @@ Useful flags:
 - `--chat "East Bay"` limits the scan to one community or group name.
 - `--lookback-hours 6` restricts the initial scan window.
 - `--rules /absolute/path/to/spam-rules.json` loads a custom dynamic rule list.
+- `add-rule --label ... --template ...` appends a new rule without hand-editing JSON.
 
 ## Notes
 
