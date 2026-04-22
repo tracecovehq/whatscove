@@ -5,8 +5,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { createTextCandidates, detectSpam } from "./detection.ts";
+import { handleModeration } from "./moderation.ts";
 import type {
   MessageSnapshot,
+  ModerationDecision,
   ScanResult,
   SpamDetectionOptions,
   SpamGuardOptions,
@@ -145,7 +147,16 @@ export class WhatsAppSpamGuard {
       lookbackHours: Number(options.lookbackHours ?? 24),
       chatFilter: options.chatFilter ?? "",
       rules: options.rules ?? [],
-      rulesPath: options.rulesPath ?? ""
+      rulesPath: options.rulesPath ?? "",
+      moderationPolicy: options.moderationPolicy ?? {
+        policyPath: "",
+        enabled: false,
+        mode: "detect",
+        actions: [],
+        ignoreLocallyBannedUsers: true,
+        hookCommand: "",
+        perRule: {}
+      }
     };
     this.lastSeenMessagePk = Number(options.afterPk ?? 0);
   }
@@ -167,6 +178,10 @@ export class WhatsAppSpamGuard {
     );
     this.lastSeenMessagePk = maxSeenPk;
     const freshMatches = matches.filter((match) => !this.seenFingerprints.has(match.fingerprint));
+    const moderationDecisions = await handleModeration(
+      freshMatches,
+      this.options.moderationPolicy
+    );
 
     for (const match of freshMatches) {
       this.seenFingerprints.add(match.fingerprint);
@@ -193,7 +208,8 @@ export class WhatsAppSpamGuard {
       matches,
       freshMatches,
       rulesPath: this.options.rulesPath,
-      ruleCount: this.options.rules.length
+      ruleCount: this.options.rules.length,
+      moderationDecisions
     };
   }
 

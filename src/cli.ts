@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { WhatsAppSpamGuard, formatScanOutput } from "./bot.ts";
+import { loadModerationPolicy } from "./moderation-policy.ts";
 import { appendSpamRule, loadSpamRules } from "./spam-rules.ts";
 
 type CliCommand = "scan" | "watch" | "add-rule";
@@ -21,6 +22,8 @@ interface ParsedArgs {
   anchorPhrases: string[];
   tags: string[];
   requireInviteLink: boolean;
+  moderationPolicyPath: string;
+  moderationMode: "detect" | "queue" | "apply" | "";
 }
 
 function readFlagValue(flags: string[], index: number, flag: string): string {
@@ -59,7 +62,9 @@ function parseArgs(argv: string[]): ParsedArgs {
     templateFile: "",
     anchorPhrases: [],
     tags: [],
-    requireInviteLink: false
+    requireInviteLink: false,
+    moderationPolicyPath: "",
+    moderationMode: ""
   };
 
   const [firstArg, ...restArgs] = argv;
@@ -85,6 +90,22 @@ function parseArgs(argv: string[]): ParsedArgs {
 
     if (flag === "--require-invite-link") {
       parsed.requireInviteLink = true;
+      continue;
+    }
+
+    if (flag === "--moderation-policy") {
+      parsed.moderationPolicyPath = readFlagValue(flags, index, flag);
+      index += 1;
+      continue;
+    }
+
+    if (flag === "--moderation-mode") {
+      const mode = readFlagValue(flags, index, flag);
+      if (mode !== "detect" && mode !== "queue" && mode !== "apply") {
+        throw new Error(`Invalid value for ${flag}: ${mode}`);
+      }
+      parsed.moderationMode = mode;
+      index += 1;
       continue;
     }
 
@@ -202,6 +223,12 @@ async function main(): Promise<void> {
   const loadedRules = await loadSpamRules({
     rulesPath: args.rulesPath || undefined
   });
+  const moderationPolicy = await loadModerationPolicy({
+    policyPath: args.moderationPolicyPath || undefined
+  });
+  if (args.moderationMode) {
+    moderationPolicy.mode = args.moderationMode;
+  }
   const effectiveMinScore = args.minScore ?? 0.72;
   const bot = new WhatsAppSpamGuard({
     minScore: effectiveMinScore,
@@ -211,7 +238,8 @@ async function main(): Promise<void> {
     lookbackHours: args.lookbackHours,
     chatFilter: args.chatFilter,
     rules: loadedRules.rules,
-    rulesPath: loadedRules.rulesPath
+    rulesPath: loadedRules.rulesPath,
+    moderationPolicy
   });
 
   if (args.command === "watch") {
@@ -230,6 +258,13 @@ async function main(): Promise<void> {
       for (const match of result.freshMatches) {
         console.log(formatScanOutput({ matches: [match] }));
       }
+      if (result.moderationDecisions.length > 0) {
+        console.log(
+          `${prefix} moderation decisions: ${result.moderationDecisions
+            .map((decision) => `${decision.action}:${decision.status}`)
+            .join(", ")}`
+        );
+      }
     });
     return;
   }
@@ -243,6 +278,7 @@ async function main(): Promise<void> {
           databasePath: result.snapshot.databasePath,
           rulesPath: result.rulesPath,
           ruleCount: result.ruleCount,
+          moderationDecisions: result.moderationDecisions,
           scannedMessages: result.snapshot.messages.length,
           matchCount: result.matches.length,
           freshMatchCount: result.freshMatches.length,

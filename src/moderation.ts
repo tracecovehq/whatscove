@@ -1,0 +1,173 @@
+import { createHash } from "node:crypto";
+import { spawn } from "node:child_process";
+import {
+  appendModerationEvents,
+  appendModerationQueue,
+  loadModerationState,
+  saveModerationState
+} from "./moderation-state.ts";
+import type {
+  ModerationActionType,
+  ModerationDecision,
+  ModerationPolicy,
+  ModerationState,
+  SuspiciousMatch
+} from "./types.ts";
+
+function buildDecisionId(match: SuspiciousMatch, action: ModerationActionType): string {
+  return createHash("sha1")
+    .update(JSON.stringify([match.fingerprint, action]))
+    .digest("hex")
+    .slice(0, 16);
+}
+
+export function getActionsForMatch(
+  match: SuspiciousMatch,
+  policy: ModerationPolicy
+): ModerationActionType[] {
+  const override = match.ruleId ? policy.perRule[match.ruleId] : undefined;
+  return override?.actions ?? policy.actions;
+}
+
+export function planModerationDecisions(
+  matches: SuspiciousMatch[],
+  policy: ModerationPolicy,
+  state: ModerationState
+): ModerationDecision[] {
+  if (!policy.enabled) {
+    return [];
+  }
+
+  const processed = new Set(state.processedDecisionIds);
+  const locallyBanned = new Set(state.locallyBannedUsers);
+  const decisions: ModerationDecision[] = [];
+
+  for (const match of matches) {
+    if (
+      policy.ignoreLocallyBannedUsers &&
+      match.fromJid &&
+      locallyBanned.has(match.fromJid)
+    ) {
+      continue;
+    }
+
+    for (const action of getActionsForMatch(match, policy)) {
+      const id = buildDecisionId(match, action);
+      if (processed.has(id)) {
+        continue;
+      }
+
+      decisions.push({
+        id,
+        createdAt: new Date().toISOString(),
+        status: policy.mode === "apply" ? "pending_apply" : "queued",
+        action,
+        matchFingerprint: match.fingerprint,
+        chatName: match.chatName,
+        chatJid: match.chatJid,
+        senderName: match.senderName,
+        fromJid: match.fromJid,
+        messagePk: match.messagePk,
+        ruleId: match.ruleId,
+        ruleLabel: match.ruleLabel,
+        text: match.text
+      });
+    }
+  }
+
+  return decisions;
+}
+
+async function runHook(policy: ModerationPolicy, decision: ModerationDecision): Promise<void> {
+  if (!policy.hookCommand) {
+    throw new Error(
+      `No moderation hook configured for action ${decision.action}; set hookCommand in moderation-policy.json`
+    );
+  }
+
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn(policy.hookCommand, {
+      shell: true,
+      stdio: ["pipe", "pipe", "pipe"]
+    });
+    let stderr = "";
+
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+    });
+
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (code === 0) {
+        resolve();
+        return;
+      }
+      reject(
+        new Error(
+          stderr.trim() || `Moderation hook exited with non-zero status ${String(code)}`
+        )
+      );
+    });
+
+    child.stdin.write(JSON.stringify(decision));
+    child.stdin.end();
+  });
+}
+
+function applyLocalSideEffects(state: ModerationState, decision: ModerationDecision): void {
+  if (
+    decision.action === "ban_sender_local" &&
+    typeof decision.fromJid === "string" &&
+    decision.fromJid.length > 0 &&
+    !state.locallyBannedUsers.includes(decision.fromJid)
+  ) {
+    state.locallyBannedUsers.push(decision.fromJid);
+  }
+}
+
+export async function handleModeration(
+  matches: SuspiciousMatch[],
+  policy: ModerationPolicy
+): Promise<ModerationDecision[]> {
+  const state = await loadModerationState();
+  const decisions = planModerationDecisions(matches, policy, state);
+
+  if (decisions.length === 0) {
+    return [];
+  }
+
+  if (policy.mode === "queue") {
+    await appendModerationQueue(decisions);
+    state.processedDecisionIds.push(...decisions.map((decision) => decision.id));
+    await saveModerationState(state);
+    await appendModerationEvents(decisions);
+    return decisions;
+  }
+
+  if (policy.mode === "apply") {
+    const completed: ModerationDecision[] = [];
+    for (const decision of decisions) {
+      try {
+        if (decision.action === "ban_sender_local") {
+          applyLocalSideEffects(state, decision);
+        } else {
+          await runHook(policy, decision);
+        }
+        decision.status = "applied";
+      } catch (error) {
+        decision.status = "failed";
+        decision.error = error instanceof Error ? error.message : String(error);
+      }
+      state.processedDecisionIds.push(decision.id);
+      completed.push(decision);
+    }
+    await saveModerationState(state);
+    await appendModerationEvents(completed);
+    return completed;
+  }
+
+  state.processedDecisionIds.push(...decisions.map((decision) => decision.id));
+  await saveModerationState(state);
+  await appendModerationEvents(decisions);
+  return decisions;
+}

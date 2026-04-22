@@ -107,6 +107,7 @@ export interface SpamGuardOptions extends SpamDetectionOptions {
   lookbackHours?: number;
   chatFilter?: string;
   rulesPath?: string;
+  moderationPolicy?: ModerationPolicy;
   afterPk?: number;
 }
 
@@ -116,4 +117,48 @@ export interface ScanResult {
   freshMatches: SuspiciousMatch[];
   rulesPath: string;
   ruleCount: number;
+  moderationDecisions: ModerationDecision[];
+}
+
+export type ModerationMode = "detect" | "queue" | "apply";
+export type ModerationActionType =
+  | "delete_message"
+  | "remove_sender"
+  | "ban_sender_local"
+  | "notify";
+
+export interface ModerationPolicyOverride {
+  actions: ModerationActionType[];
+}
+
+export interface ModerationPolicy {
+  policyPath: string;
+  enabled: boolean;
+  mode: ModerationMode;
+  actions: ModerationActionType[];
+  ignoreLocallyBannedUsers: boolean;
+  hookCommand: string;
+  perRule: Record<string, ModerationPolicyOverride>;
+}
+
+export interface ModerationDecision {
+  id: string;
+  createdAt: string;
+  status: "queued" | "pending_apply" | "applied" | "failed";
+  action: ModerationActionType;
+  matchFingerprint: string;
+  chatName: string;
+  chatJid: string;
+  senderName: string;
+  fromJid: string;
+  messagePk: number;
+  ruleId?: string;
+  ruleLabel?: string;
+  text: string;
+  error?: string;
+}
+
+export interface ModerationState {
+  locallyBannedUsers: string[];
+  processedDecisionIds: string[];
 }

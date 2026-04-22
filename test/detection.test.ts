@@ -10,8 +10,10 @@ import {
   getDefaultSpamRules,
   normalizeText
 } from "../src/detection.ts";
+import { getActionsForMatch, planModerationDecisions } from "../src/moderation.ts";
+import { loadModerationPolicy } from "../src/moderation-policy.ts";
 import { appendSpamRule, buildSpamRule, loadSpamRules } from "../src/spam-rules.ts";
-import type { SpamRule } from "../src/types.ts";
+import type { ModerationPolicy, SpamRule, SuspiciousMatch } from "../src/types.ts";
 
 const STOCK_SPAM_TEMPLATE =
   "This is a group for sharing US stock knowledge and information for free. Here, you can view the latest information of various stocks. In order to avoid investment risks and obtain greater returns, you can also learn about the real US stock investment market information here. At the same time, you can also learn more rich investment experience and skills in the group. If you are investing in US stocks, or you are a US stock enthusiast, welcome to join this group";
@@ -186,4 +188,71 @@ test("appendSpamRule rejects duplicate ids", async () => {
     ),
     /already contain a rule with id/
   );
+});
+
+test("loadModerationPolicy loads the default moderation config", async () => {
+  const policy = await loadModerationPolicy();
+
+  assert.equal(policy.enabled, true);
+  assert.equal(policy.mode, "queue");
+  assert.ok(policy.actions.includes("delete_message"));
+});
+
+test("planModerationDecisions creates queued actions for real spam matches", () => {
+  const policy: ModerationPolicy = {
+    policyPath: "/tmp/mod.json",
+    enabled: true,
+    mode: "queue",
+    actions: ["delete_message", "remove_sender", "ban_sender_local"],
+    ignoreLocallyBannedUsers: true,
+    hookCommand: "",
+    perRule: {}
+  };
+  const match: SuspiciousMatch = {
+    fingerprint: "abc123",
+    messagePk: 99,
+    chatName: "General",
+    chatJid: "1203634@g.us",
+    senderName: "Spammer",
+    fromJid: "999@s.whatsapp.net",
+    messageType: 0,
+    messageTimeLocal: "2026-04-22 15:00:00",
+    ruleId: "us-stock-group-invite",
+    ruleLabel: "US stock promo invite",
+    text: "This is a spam message",
+    score: 0.95,
+    reasons: ["matches spam rule"]
+  };
+
+  const decisions = planModerationDecisions([match], policy, {
+    locallyBannedUsers: [],
+    processedDecisionIds: []
+  });
+
+  assert.equal(decisions.length, 3);
+  assert.deepEqual(
+    decisions.map((decision) => decision.action),
+    ["delete_message", "remove_sender", "ban_sender_local"]
+  );
+});
+
+test("getActionsForMatch applies per-rule moderation overrides", () => {
+  const policy: ModerationPolicy = {
+    policyPath: "/tmp/mod.json",
+    enabled: true,
+    mode: "queue",
+    actions: ["delete_message", "remove_sender"],
+    ignoreLocallyBannedUsers: true,
+    hookCommand: "",
+    perRule: {
+      "cedar-lantern-signal": {
+        actions: ["notify"]
+      }
+    }
+  };
+  const match = {
+    ruleId: "cedar-lantern-signal"
+  } as SuspiciousMatch;
+
+  assert.deepEqual(getActionsForMatch(match, policy), ["notify"]);
 });
