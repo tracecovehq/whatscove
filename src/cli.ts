@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { parseArgs as parseNodeArgs } from "node:util";
 import { WhatsAppSpamGuard, formatScanOutput, formatWeakScanOutput } from "./bot.ts";
 import { loadModerationPolicy } from "./moderation-policy.ts";
 import { appendSpamRule, loadSpamRules } from "./spam-rules.ts";
@@ -27,172 +28,97 @@ interface ParsedArgs {
   moderationMode: "detect" | "queue" | "apply" | "";
 }
 
-function readFlagValue(flags: string[], index: number, flag: string): string {
-  const value = flags[index + 1];
-  if (typeof value !== "string" || value.startsWith("--")) {
-    throw new Error(`Missing value for ${flag}`);
+function parseOptionalNumber(value: string | undefined, flag: string): number | undefined {
+  if (typeof value !== "string") {
+    return undefined;
   }
 
-  return value;
-}
-
-function readNumberFlag(flags: string[], index: number, flag: string): number {
-  const rawValue = readFlagValue(flags, index, flag);
-  const value = Number(rawValue);
-  if (!Number.isFinite(value)) {
-    throw new Error(`Invalid numeric value for ${flag}: ${rawValue}`);
-  }
-
-  return value;
-}
-
-function parseArgs(argv: string[]): ParsedArgs {
-  const parsed: ParsedArgs = {
-    command: "scan",
-    minScore: undefined,
-    weakMinScore: undefined,
-    pollMs: 30_000,
-    notify: true,
-    json: false,
-    limit: 250,
-    lookbackHours: 24,
-    chatFilter: "",
-    rulesPath: "",
-    ruleId: "",
-    ruleLabel: "",
-    template: "",
-    templateFile: "",
-    anchorPhrases: [],
-    tags: [],
-    requireInviteLink: false,
-    moderationPolicyPath: "",
-    moderationMode: ""
-  };
-
-  const [firstArg, ...restArgs] = argv;
-  const hasExplicitCommand =
-    firstArg === "scan" || firstArg === "watch" || firstArg === "add-rule";
-  const flags = hasExplicitCommand ? restArgs : argv;
-
-  if (hasExplicitCommand) {
-    parsed.command = firstArg;
-  }
-
-  for (let index = 0; index < flags.length; index += 1) {
-    const flag = flags[index];
-    if (flag === "--json") {
-      parsed.json = true;
-      continue;
-    }
-
-    if (flag === "--no-notify") {
-      parsed.notify = false;
-      continue;
-    }
-
-    if (flag === "--require-invite-link") {
-      parsed.requireInviteLink = true;
-      continue;
-    }
-
-    if (flag === "--moderation-policy") {
-      parsed.moderationPolicyPath = readFlagValue(flags, index, flag);
-      index += 1;
-      continue;
-    }
-
-    if (flag === "--moderation-mode") {
-      const mode = readFlagValue(flags, index, flag);
-      if (mode !== "detect" && mode !== "queue" && mode !== "apply") {
-        throw new Error(`Invalid value for ${flag}: ${mode}`);
-      }
-      parsed.moderationMode = mode;
-      index += 1;
-      continue;
-    }
-
-    if (flag === "--min-score") {
-      parsed.minScore = readNumberFlag(flags, index, flag);
-      index += 1;
-      continue;
-    }
-
-    if (flag === "--weak-min-score") {
-      parsed.weakMinScore = readNumberFlag(flags, index, flag);
-      index += 1;
-      continue;
-    }
-
-    if (flag === "--poll-seconds") {
-      parsed.pollMs = readNumberFlag(flags, index, flag) * 1000;
-      index += 1;
-      continue;
-    }
-
-    if (flag === "--limit") {
-      parsed.limit = readNumberFlag(flags, index, flag);
-      index += 1;
-      continue;
-    }
-
-    if (flag === "--lookback-hours") {
-      parsed.lookbackHours = readNumberFlag(flags, index, flag);
-      index += 1;
-      continue;
-    }
-
-    if (flag === "--chat") {
-      parsed.chatFilter = readFlagValue(flags, index, flag);
-      index += 1;
-      continue;
-    }
-
-    if (flag === "--rules") {
-      parsed.rulesPath = readFlagValue(flags, index, flag);
-      index += 1;
-      continue;
-    }
-
-    if (flag === "--id") {
-      parsed.ruleId = readFlagValue(flags, index, flag);
-      index += 1;
-      continue;
-    }
-
-    if (flag === "--label") {
-      parsed.ruleLabel = readFlagValue(flags, index, flag);
-      index += 1;
-      continue;
-    }
-
-    if (flag === "--template") {
-      parsed.template = readFlagValue(flags, index, flag);
-      index += 1;
-      continue;
-    }
-
-    if (flag === "--template-file") {
-      parsed.templateFile = readFlagValue(flags, index, flag);
-      index += 1;
-      continue;
-    }
-
-    if (flag === "--anchor") {
-      parsed.anchorPhrases.push(readFlagValue(flags, index, flag));
-      index += 1;
-      continue;
-    }
-
-    if (flag === "--tag") {
-      parsed.tags.push(readFlagValue(flags, index, flag));
-      index += 1;
-      continue;
-    }
-
-    throw new Error(`Unknown flag: ${flag}`);
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    throw new Error(`Invalid numeric value for ${flag}: ${value}`);
   }
 
   return parsed;
+}
+
+function parseStringArray(value: string[] | undefined): string[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function parseModerationMode(
+  value: string | undefined
+): "detect" | "queue" | "apply" | "" {
+  if (typeof value !== "string" || value === "") {
+    return "";
+  }
+
+  if (value === "detect" || value === "queue" || value === "apply") {
+    return value;
+  }
+
+  throw new Error(`Invalid value for --moderation-mode: ${value}`);
+}
+
+function parseCliArgs(argv: string[]): ParsedArgs {
+  const [firstArg, ...restArgs] = argv;
+  const hasExplicitCommand =
+    firstArg === "scan" || firstArg === "watch" || firstArg === "add-rule";
+  const command: CliCommand = hasExplicitCommand ? firstArg : "scan";
+  const args = hasExplicitCommand ? restArgs : argv;
+
+  const { values, positionals } = parseNodeArgs({
+    args,
+    allowPositionals: true,
+    strict: true,
+    options: {
+      json: { type: "boolean", default: false },
+      "no-notify": { type: "boolean", default: false },
+      "require-invite-link": { type: "boolean", default: false },
+      "moderation-policy": { type: "string" },
+      "moderation-mode": { type: "string" },
+      "min-score": { type: "string" },
+      "weak-min-score": { type: "string" },
+      "poll-seconds": { type: "string" },
+      limit: { type: "string" },
+      "lookback-hours": { type: "string" },
+      chat: { type: "string" },
+      rules: { type: "string" },
+      id: { type: "string" },
+      label: { type: "string" },
+      template: { type: "string" },
+      "template-file": { type: "string" },
+      anchor: { type: "string", multiple: true },
+      tag: { type: "string", multiple: true }
+    }
+  });
+
+  if (positionals.length > 0) {
+    throw new Error(`Unexpected argument: ${positionals.join(" ")}`);
+  }
+
+  const pollSeconds = parseOptionalNumber(values["poll-seconds"], "--poll-seconds");
+
+  return {
+    command,
+    minScore: parseOptionalNumber(values["min-score"], "--min-score"),
+    weakMinScore: parseOptionalNumber(values["weak-min-score"], "--weak-min-score"),
+    pollMs: (pollSeconds ?? 30) * 1000,
+    notify: !values["no-notify"],
+    json: values.json,
+    limit: parseOptionalNumber(values.limit, "--limit") ?? 250,
+    lookbackHours: parseOptionalNumber(values["lookback-hours"], "--lookback-hours") ?? 24,
+    chatFilter: values.chat ?? "",
+    rulesPath: values.rules ?? "",
+    ruleId: values.id ?? "",
+    ruleLabel: values.label ?? "",
+    template: values.template ?? "",
+    templateFile: values["template-file"] ?? "",
+    anchorPhrases: parseStringArray(values.anchor),
+    tags: parseStringArray(values.tag),
+    requireInviteLink: values["require-invite-link"],
+    moderationPolicyPath: values["moderation-policy"] ?? "",
+    moderationMode: parseModerationMode(values["moderation-mode"])
+  };
 }
 
 async function readTemplateText(args: ParsedArgs): Promise<string> {
@@ -204,7 +130,7 @@ async function readTemplateText(args: ParsedArgs): Promise<string> {
 }
 
 async function main(): Promise<void> {
-  const args = parseArgs(process.argv.slice(2));
+  const args = parseCliArgs(process.argv.slice(2));
 
   if (args.command === "add-rule") {
     const template = await readTemplateText(args);
@@ -237,6 +163,7 @@ async function main(): Promise<void> {
   if (args.moderationMode) {
     moderationPolicy.mode = args.moderationMode;
   }
+
   const effectiveMinScore = args.minScore ?? 0.72;
   const effectiveWeakMinScore = args.weakMinScore;
   const bot = new WhatsAppSpamGuard({
@@ -253,34 +180,36 @@ async function main(): Promise<void> {
   });
 
   if (args.command === "watch") {
-      console.log(
-        `Watching WhatsApp every ${(args.pollMs / 1000).toFixed(0)}s with minimum score ${effectiveMinScore.toFixed(2)} across ${loadedRules.rules.length} spam rule(s)${
-          typeof effectiveWeakMinScore === "number"
-            ? ` and weak-match logging from ${effectiveWeakMinScore.toFixed(2)}`
-            : ""
-        }`
-      );
+    console.log(
+      `Watching WhatsApp every ${(args.pollMs / 1000).toFixed(0)}s with minimum score ${effectiveMinScore.toFixed(2)} across ${loadedRules.rules.length} spam rule(s)${
+        typeof effectiveWeakMinScore === "number"
+          ? ` and weak-match logging from ${effectiveWeakMinScore.toFixed(2)}`
+          : ""
+      }`
+    );
 
-      await bot.watch((result) => {
-        const prefix = `[${new Date().toISOString()}]`;
-        if (result.freshMatches.length === 0 && result.freshWeakMatches.length === 0) {
-          console.log(`${prefix} scan complete, no new spam-rule matches.`);
-          return;
-        }
+    await bot.watch((result) => {
+      const prefix = `[${new Date().toISOString()}]`;
+      if (result.freshMatches.length === 0 && result.freshWeakMatches.length === 0) {
+        console.log(`${prefix} scan complete, no new spam-rule matches.`);
+        return;
+      }
 
       console.log(`${prefix} ${result.freshMatches.length} new suspicious message(s):`);
-        for (const match of result.freshMatches) {
-          console.log(formatScanOutput({ matches: [match] }));
+      for (const match of result.freshMatches) {
+        console.log(formatScanOutput({ matches: [match] }));
+      }
+
+      if (result.freshWeakMatches.length > 0) {
+        console.log(`${prefix} ${result.freshWeakMatches.length} weak testing match(es):`);
+        for (const match of result.freshWeakMatches) {
+          console.log(formatWeakScanOutput({ weakMatches: [match] }));
         }
-        if (result.freshWeakMatches.length > 0) {
-          console.log(`${prefix} ${result.freshWeakMatches.length} weak testing match(es):`);
-          for (const match of result.freshWeakMatches) {
-            console.log(formatWeakScanOutput({ weakMatches: [match] }));
-          }
-        }
-        if (result.moderationDecisions.length > 0) {
-          console.log(
-            `${prefix} moderation decisions: ${result.moderationDecisions
+      }
+
+      if (result.moderationDecisions.length > 0) {
+        console.log(
+          `${prefix} moderation decisions: ${result.moderationDecisions
             .map((decision) => `${decision.action}:${decision.status}`)
             .join(", ")}`
         );
