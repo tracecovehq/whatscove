@@ -1,6 +1,11 @@
 import { readFile } from "node:fs/promises";
 import { parseArgs as parseNodeArgs } from "node:util";
-import { WhatsAppSpamGuard, formatScanOutput, formatWeakScanOutput } from "./bot.ts";
+import {
+  WhatsAppSpamGuard,
+  formatScanOutput,
+  formatWeakScanOutput,
+  sortMatchesChronologically
+} from "./bot.ts";
 import { loadModerationPolicy } from "./moderation-policy.ts";
 import { appendSpamRule, loadSpamRules } from "./spam-rules.ts";
 
@@ -190,19 +195,22 @@ async function main(): Promise<void> {
 
     await bot.watch((result) => {
       const prefix = `[${new Date().toISOString()}]`;
-      if (result.freshMatches.length === 0 && result.freshWeakMatches.length === 0) {
+      const chronologicalFreshMatches = sortMatchesChronologically(result.freshMatches);
+      const chronologicalFreshWeakMatches = sortMatchesChronologically(result.freshWeakMatches);
+
+      if (chronologicalFreshMatches.length === 0 && chronologicalFreshWeakMatches.length === 0) {
         console.log(`${prefix} scan complete, no new spam-rule matches.`);
         return;
       }
 
-      console.log(`${prefix} ${result.freshMatches.length} new suspicious message(s):`);
-      for (const match of result.freshMatches) {
+      console.log(`${prefix} ${chronologicalFreshMatches.length} new suspicious message(s):`);
+      for (const match of chronologicalFreshMatches) {
         console.log(formatScanOutput({ matches: [match] }));
       }
 
-      if (result.freshWeakMatches.length > 0) {
-        console.log(`${prefix} ${result.freshWeakMatches.length} weak testing match(es):`);
-        for (const match of result.freshWeakMatches) {
+      if (chronologicalFreshWeakMatches.length > 0) {
+        console.log(`${prefix} ${chronologicalFreshWeakMatches.length} weak testing match(es):`);
+        for (const match of chronologicalFreshWeakMatches) {
           console.log(formatWeakScanOutput({ weakMatches: [match] }));
         }
       }

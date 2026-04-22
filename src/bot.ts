@@ -21,6 +21,7 @@ const PACKAGE_ROOT = fileURLToPath(new URL("..", import.meta.url));
 const DATA_DIR = path.join(PACKAGE_ROOT, "data");
 const LATEST_RESULTS_PATH = path.join(DATA_DIR, "latest-suspects.json");
 const ALERT_LOG_PATH = path.join(DATA_DIR, "spam-alerts.jsonl");
+const HUMAN_ALERT_LOG_PATH = path.join(DATA_DIR, "spam-alerts.log");
 
 function buildFingerprint(record: Record<string, unknown>): string {
   return createHash("sha1").update(JSON.stringify(record)).digest("hex").slice(0, 12);
@@ -108,6 +109,97 @@ async function notify(match: SuspiciousMatch): Promise<void> {
   await execFileAsync("osascript", ["-e", buildNotificationScript(match)]);
 }
 
+function shortenJid(jid: string | undefined): string {
+  if (!jid) {
+    return "unknown";
+  }
+
+  if (jid.length <= 20) {
+    return jid;
+  }
+
+  return `${jid.slice(0, 8)}...${jid.slice(-10)}`;
+}
+
+function describeSender(match: SuspiciousMatch): string {
+  const senderName = match.senderName?.trim();
+  if (senderName && senderName !== match.fromJid) {
+    return `${senderName} (${shortenJid(match.fromJid)})`;
+  }
+
+  return shortenJid(match.fromJid);
+}
+
+function confidenceLabel(score: number): string {
+  if (score >= 0.9) {
+    return "very high";
+  }
+  if (score >= 0.75) {
+    return "high";
+  }
+  if (score >= 0.5) {
+    return "medium";
+  }
+  return "low";
+}
+
+function toPercent(score: number): string {
+  return `${Math.round(score * 100)}%`;
+}
+
+function formatReasonList(reasons: string[]): string {
+  if (reasons.length === 0) {
+    return "No specific detection signals were recorded.";
+  }
+
+  return reasons.join("; ");
+}
+
+function compareMatchesChronologically(left: SuspiciousMatch, right: SuspiciousMatch): number {
+  const leftTime = left.messageTimeLocal || "";
+  const rightTime = right.messageTimeLocal || "";
+  if (leftTime !== rightTime) {
+    return leftTime.localeCompare(rightTime);
+  }
+
+  return left.messagePk - right.messagePk;
+}
+
+export function sortMatchesChronologically(matches: SuspiciousMatch[]): SuspiciousMatch[] {
+  return [...matches].sort(compareMatchesChronologically);
+}
+
+function formatHumanLogEntry(
+  match: SuspiciousMatch,
+  options: {
+    fetchedAt?: string;
+    label?: string;
+    includeFingerprint?: boolean;
+  } = {}
+): string {
+  const label = options.label ?? "Spam match";
+  const lines = [
+    `${label} | ${match.ruleLabel || "spam rule"} | ${toPercent(match.score)} confidence (${confidenceLabel(match.score)})`,
+    `Time: ${match.messageTimeLocal || "unknown"} | Chat: ${match.chatName || "unknown"} | Sender: ${describeSender(match)}`,
+    `Message: ${match.text}`,
+    `Why: ${formatReasonList(match.reasons)}`
+  ];
+
+  if ((match.details?.matchedPhrases.length ?? 0) > 0) {
+    lines.push(`Matched phrases: ${match.details?.matchedPhrases.join(", ")}`);
+  }
+
+  if (options.includeFingerprint) {
+    lines.push(`Fingerprint: ${match.fingerprint}`);
+  }
+
+  if (options.fetchedAt) {
+    lines.push(`Scanned at: ${options.fetchedAt}`);
+  }
+
+  return `${lines.join("\n")}\n${"-".repeat(72)}\n`;
+}
+
 async function writeArtifacts(snapshot: MessageSnapshot, matches: SuspiciousMatch[]): Promise<void> {
   await ensureDataDir();
   await writeFile(
@@ -138,22 +230,36 @@ async function writeArtifacts(snapshot: MessageSnapshot, matches: SuspiciousMatc
     .join("\n");
 
   await appendFile(ALERT_LOG_PATH, `${lines}\n`);
+  const humanLog = matches
+    .map((match) =>
+      formatHumanLogEntry(match, {
+        fetchedAt: snapshot.fetchedAt,
+        includeFingerprint: true
+      })
+    )
+    .join("\n");
+  await appendFile(HUMAN_ALERT_LOG_PATH, humanLog);
 }
 
 function summarizeMatch(match: SuspiciousMatch): string {
-  return [
-    `[score ${match.score.toFixed(3)}] ${match.ruleLabel || "spam rule"} | ${match.chatName || "unknown chat"} | ${match.senderName || match.fromJid || "unknown sender"} | ${match.messageTimeLocal || "unknown time"}`,
-    `text: ${match.text}`,
-    `why: ${match.reasons.join("; ")}`
-  ].join("\n");
+  return formatHumanLogEntry(match, {
+    label: "Spam match"
+  }).trimEnd();
 }
 
 function summarizeWeakMatch(match: SuspiciousMatch): string {
-  return [
-    `[weak score ${match.score.toFixed(3)}] ${match.ruleLabel || "spam rule"} | ${match.chatName || "unknown chat"} | ${match.senderName || match.fromJid || "unknown sender"} | ${match.messageTimeLocal || "unknown time"}`,
-    `text: ${match.text}`,
-    `why: ${match.reasons.join("; ") || "low-confidence similarity to an active spam rule"}`
-  ].join("\n");
+  return formatHumanLogEntry(
+    {
+      ...match,
+      reasons:
+        match.reasons.length > 0
+          ? match.reasons
+          : ["Low-confidence similarity to an active spam rule."]
+    },
+    {
+      label: "Weak testing match"
+    }
+  ).trimEnd();
 }
 
 export class WhatsAppSpamGuard {

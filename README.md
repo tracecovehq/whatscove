@@ -16,12 +16,12 @@ It can also auto-moderate matches through a moderation policy: queue moderation 
 
 1. `src/whatsapp-db.ts` queries WhatsApp Desktop's local `ChatStorage.sqlite`.
 2. `src/detection.ts` normalizes text, strips links, and scores each message-like string against every active spam rule.
-3. `src/bot.ts` logs matches to `data/latest-suspects.json` and `data/spam-alerts.jsonl`, and can optionally show macOS notifications for new hits.
+3. `src/bot.ts` logs matches to `data/latest-suspects.json`, appends machine-readable entries to `data/spam-alerts.jsonl`, writes human-readable summaries to `data/spam-alerts.log`, and can optionally show macOS notifications for new hits.
 4. `src/moderation.ts` turns fresh matches into moderation decisions and either logs, queues, or applies them based on the moderation policy.
 
 ## Rules
 
-The default rules live in [config/spam-rules.json](/Users/jlukanta/Projects/tracecove/whatscove/config/spam-rules.json), and WhatsCove also supports `spam-rules.yaml` / `spam-rules.yml`.
+The default rules live in [spam-rules.yaml](/Users/jlukanta/Projects/tracecove/whatscove/config/spam-rules.yaml), and WhatsCove also supports `spam-rules.json` / `spam-rules.yml`.
 
 Each rule can define:
 
@@ -37,7 +37,7 @@ You can add as many rules as you want to that file, or point the CLI at a differ
 
 ## Moderation
 
-The default moderation policy lives in [config/moderation-policy.json](/Users/jlukanta/Projects/tracecove/whatscove/config/moderation-policy.json), and WhatsCove also supports `moderation-policy.yaml` / `moderation-policy.yml`.
+The default moderation policy lives in [moderation-policy.yaml](/Users/jlukanta/Projects/tracecove/whatscove/config/moderation-policy.yaml), and WhatsCove also supports `moderation-policy.json` / `moderation-policy.yml`.
 
 Supported moderation actions:
 
@@ -105,7 +105,7 @@ Run with apply mode and a custom moderation policy:
 node --experimental-strip-types ./src/cli.ts watch \
   --poll-seconds 20 \
   --moderation-mode apply \
-  --moderation-policy /absolute/path/to/moderation-policy.json
+  --moderation-policy /absolute/path/to/moderation-policy.yaml
 ```
 
 Append a new spam rule from the terminal:
@@ -139,10 +139,10 @@ Useful flags:
 - `--json` prints the full scan result as JSON for automation.
 - `--chat "East Bay"` limits the scan to one community or group name.
 - `--lookback-hours 6` restricts the initial scan window.
-- `--rules /absolute/path/to/spam-rules.json` loads a custom dynamic rule list.
-- `--rules /absolute/path/to/spam-rules.yaml` also works for YAML rule files.
-- `--moderation-policy /absolute/path/to/moderation-policy.json` loads a moderation policy.
-- `--moderation-policy /absolute/path/to/moderation-policy.yaml` also works for YAML policy files.
+- `--rules /absolute/path/to/spam-rules.yaml` loads a custom dynamic rule list.
+- `--rules /absolute/path/to/spam-rules.json` also works for JSON rule files.
+- `--moderation-policy /absolute/path/to/moderation-policy.yaml` loads a moderation policy.
+- `--moderation-policy /absolute/path/to/moderation-policy.json` also works for JSON policy files.
 - `--moderation-mode detect|queue|apply` controls whether matches just log, queue, or execute moderation actions.
 - `add-rule --label ... --template ...` appends a new rule without hand-editing JSON.
 

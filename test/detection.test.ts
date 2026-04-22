@@ -3,7 +3,12 @@ import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { findSuspiciousEntries } from "../src/bot.ts";
+import {
+  findSuspiciousEntries,
+  formatScanOutput,
+  formatWeakScanOutput,
+  sortMatchesChronologically
+} from "../src/bot.ts";
 import {
   createTextCandidates,
   detectSpam,
@@ -174,6 +179,159 @@ test("weak match scanning respects the weak threshold floor", async () => {
 
   assert.equal(result.matches.length, 0);
   assert.equal(result.weakMatches.length, 0);
+});
+
+test("formatScanOutput produces a readable moderation-style summary", () => {
+  const output = formatScanOutput({
+    matches: [
+      {
+        fingerprint: "abc123",
+        messagePk: 10,
+        chatName: "Testing",
+        chatJid: "120363425971995875@g.us",
+        senderName: "Example Sender",
+        fromJid: "15551234567@s.whatsapp.net",
+        messageType: 0,
+        messageTimeLocal: "2026-04-22 16:00:00",
+        ruleId: "blue-harbor-signal-group",
+        ruleLabel: "Blue Harbor signal group",
+        text: "Blue Harbor Seven is a private signal group for free market updates. Join now.",
+        score: 0.95,
+        reasons: ["matches 4 blue harbor signal group anchor phrase(s)"],
+        details: {
+          hasInviteLink: false,
+          tokenCoverage: 1,
+          charSimilarity: 1,
+          matchedPhrases: ["blue harbor seven", "private signal group"],
+          ruleId: "blue-harbor-signal-group",
+          ruleLabel: "Blue Harbor signal group",
+          tags: ["test"]
+        }
+      }
+    ]
+  });
+
+  assert.match(output, /Spam match \| Blue Harbor signal group \| 95% confidence \(very high\)/);
+  assert.match(output, /Chat: Testing/);
+  assert.match(output, /Sender: Example Sender/);
+  assert.match(output, /Matched phrases: blue harbor seven, private signal group/);
+});
+
+test("formatWeakScanOutput produces a readable low-confidence summary", () => {
+  const output = formatWeakScanOutput({
+    weakMatches: [
+      {
+        fingerprint: "weak123",
+        messagePk: 11,
+        chatName: "Testing",
+        chatJid: "120363425971995875@g.us",
+        senderName: "Example Sender",
+        fromJid: "15551234567@s.whatsapp.net",
+        messageType: 0,
+        messageTimeLocal: "2026-04-22 16:08:09",
+        ruleId: "us-stock-group-invite",
+        ruleLabel: "US stock promo invite",
+        text: "I've had greater returns tailoring my resume to the jd. Welcome to join this group",
+        score: 0.148,
+        reasons: ["matches 2 us stock promo invite anchor phrase(s)"],
+        details: {
+          hasInviteLink: false,
+          tokenCoverage: 0.163,
+          charSimilarity: 0.099,
+          matchedPhrases: ["greater returns", "welcome to join this group"],
+          ruleId: "us-stock-group-invite",
+          ruleLabel: "US stock promo invite",
+          tags: ["stocks"]
+        }
+      }
+    ]
+  });
+
+  assert.match(output, /Weak testing match \| US stock promo invite \| 15% confidence \(low\)/);
+  assert.match(output, /Why: matches 2 us stock promo invite anchor phrase\(s\)/);
+  assert.match(output, /Matched phrases: greater returns, welcome to join this group/);
+});
+
+test("sortMatchesChronologically orders the console feed oldest to newest", () => {
+  const sorted = sortMatchesChronologically([
+    {
+      fingerprint: "newest",
+      messagePk: 30,
+      chatName: "Testing",
+      chatJid: "group-1@g.us",
+      senderName: "Newest Sender",
+      fromJid: "newest@s.whatsapp.net",
+      messageType: 0,
+      messageTimeLocal: "2026-04-22 16:08:09",
+      ruleId: "us-stock-group-invite",
+      ruleLabel: "US stock promo invite",
+      text: "Newest",
+      score: 0.2,
+      reasons: [],
+      details: {
+        hasInviteLink: false,
+        tokenCoverage: 0,
+        charSimilarity: 0,
+        matchedPhrases: [],
+        ruleId: "us-stock-group-invite",
+        ruleLabel: "US stock promo invite",
+        tags: []
+      }
+    },
+    {
+      fingerprint: "oldest",
+      messagePk: 10,
+      chatName: "Testing",
+      chatJid: "group-1@g.us",
+      senderName: "Oldest Sender",
+      fromJid: "oldest@s.whatsapp.net",
+      messageType: 0,
+      messageTimeLocal: "2026-04-22 15:20:44",
+      ruleId: "cedar-lantern-signal",
+      ruleLabel: "Cedar lantern trigger",
+      text: "Oldest",
+      score: 0.95,
+      reasons: [],
+      details: {
+        hasInviteLink: false,
+        tokenCoverage: 1,
+        charSimilarity: 1,
+        matchedPhrases: [],
+        ruleId: "cedar-lantern-signal",
+        ruleLabel: "Cedar lantern trigger",
+        tags: []
+      }
+    },
+    {
+      fingerprint: "middle",
+      messagePk: 20,
+      chatName: "Testing",
+      chatJid: "group-1@g.us",
+      senderName: "Middle Sender",
+      fromJid: "middle@s.whatsapp.net",
+      messageType: 0,
+      messageTimeLocal: "2026-04-22 15:27:46",
+      ruleId: "blue-harbor-signal-group",
+      ruleLabel: "Blue Harbor signal group",
+      text: "Middle",
+      score: 0.95,
+      reasons: [],
+      details: {
+        hasInviteLink: false,
+        tokenCoverage: 1,
+        charSimilarity: 1,
+        matchedPhrases: [],
+        ruleId: "blue-harbor-signal-group",
+        ruleLabel: "Blue Harbor signal group",
+        tags: []
+      }
+    }
+  ]);
+
+  assert.deepEqual(
+    sorted.map((match) => match.fingerprint),
+    ["oldest", "middle", "newest"]
+  );
 });
 
 test("loadSpamRules reads a custom dynamic rules file", async () => {
