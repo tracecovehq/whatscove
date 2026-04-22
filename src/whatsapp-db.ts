@@ -1,7 +1,8 @@
 import { execFile } from "node:child_process";
-import { promisify } from "node:util";
-import path from "node:path";
 import { homedir } from "node:os";
+import path from "node:path";
+import { promisify } from "node:util";
+import type { FetchRecentMessagesOptions, MessageRow, MessageSnapshot } from "./types.ts";
 
 const execFileAsync = promisify(execFile);
 const DEFAULT_DB_PATH = path.join(
@@ -9,33 +10,35 @@ const DEFAULT_DB_PATH = path.join(
   "Library/Group Containers/group.net.whatsapp.WhatsApp.shared/ChatStorage.sqlite"
 );
 
-function quoteSql(value) {
+function quoteSql(value: string): string {
   return `'${String(value).replace(/'/g, "''")}'`;
 }
 
-function buildWhereClause(options) {
+function buildWhereClause(options: FetchRecentMessagesOptions): string {
   const clauses = ["m.ZISFROMME = 0"];
 
   if (Number.isFinite(options.afterPk)) {
-    clauses.push(`m.Z_PK > ${Math.trunc(options.afterPk)}`);
+    clauses.push(`m.Z_PK > ${Math.trunc(options.afterPk as number)}`);
   }
 
-  if (Number.isFinite(options.lookbackHours) && options.lookbackHours > 0) {
+  if (Number.isFinite(options.lookbackHours) && (options.lookbackHours as number) > 0) {
     clauses.push(
       `m.ZMESSAGEDATE >= ((strftime('%s','now') - 978307200) - ${Math.trunc(
-        options.lookbackHours * 3600
+        (options.lookbackHours as number) * 3600
       )})`
     );
   }
 
   if (options.chatFilter) {
-    clauses.push(`lower(s.ZPARTNERNAME) LIKE ${quoteSql(`%${options.chatFilter.toLowerCase()}%`)}`);
+    clauses.push(
+      `lower(s.ZPARTNERNAME) LIKE ${quoteSql(`%${options.chatFilter.toLowerCase()}%`)}`
+    );
   }
 
   return clauses.join("\n    AND ");
 }
 
-function buildMessageQuery(options) {
+function buildMessageQuery(options: FetchRecentMessagesOptions): string {
   const limit = Math.max(1, Math.trunc(options.limit ?? 250));
   const whereClause = buildWhereClause(options);
 
@@ -80,16 +83,28 @@ function buildMessageQuery(options) {
   `;
 }
 
-export async function fetchRecentMessages(options = {}) {
-  const databasePath = options.databasePath || process.env.WHATSAPP_CHAT_DB_PATH || DEFAULT_DB_PATH;
+export async function fetchRecentMessages(
+  options: FetchRecentMessagesOptions = {}
+): Promise<MessageSnapshot> {
+  const databasePath =
+    options.databasePath || process.env.WHATSAPP_CHAT_DB_PATH || DEFAULT_DB_PATH;
   const query = buildMessageQuery(options);
   const { stdout } = await execFileAsync("sqlite3", ["-json", databasePath, query], {
     maxBuffer: 1024 * 1024 * 16
   });
 
+  let messages: MessageRow[];
+  try {
+    messages = JSON.parse(stdout || "[]") as MessageRow[];
+  } catch (error) {
+    throw new Error(
+      `Failed to parse sqlite3 JSON output from ${databasePath}: ${(error as Error).message}`
+    );
+  }
+
   return {
     databasePath,
     fetchedAt: new Date().toISOString(),
-    messages: JSON.parse(stdout || "[]")
+    messages
   };
 }

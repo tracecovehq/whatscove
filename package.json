@@ -3,11 +3,11 @@
   "private": true,
   "type": "module",
   "engines": {
-    "node": ">=20"
+    "node": ">=24"
   },
   "scripts": {
-    "scan": "node ./src/cli.mjs scan",
-    "watch": "node ./src/cli.mjs watch",
-    "test": "node --test"
+    "scan": "node --experimental-strip-types ./src/cli.ts scan",
+    "watch": "node --experimental-strip-types ./src/cli.ts watch",
+    "test": "node --experimental-strip-types --test ./test/*.test.ts"
   }
 }

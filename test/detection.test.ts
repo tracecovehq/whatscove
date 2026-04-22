@@ -1,14 +1,16 @@
-import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { detectSpam, detectStockSpam, normalizeText, getDefaultSpamRules } from "../src/detection.mjs";
-import { appendSpamRule, buildSpamRule, loadSpamRules } from "../src/spam-rules.mjs";
+import test from "node:test";
+import { detectSpam, detectStockSpam, getDefaultSpamRules, normalizeText } from "../src/detection.ts";
+import { appendSpamRule, buildSpamRule, loadSpamRules } from "../src/spam-rules.ts";
+import type { SpamRule } from "../src/types.ts";
 
-const STOCK_SPAM_TEMPLATE = "This is a group for sharing US stock knowledge and information for free. Here, you can view the latest information of various stocks. In order to avoid investment risks and obtain greater returns, you can also learn about the real US stock investment market information here. At the same time, you can also learn more rich investment experience and skills in the group. If you are investing in US stocks, or you are a US stock enthusiast, welcome to join this group";
+const STOCK_SPAM_TEMPLATE =
+  "This is a group for sharing US stock knowledge and information for free. Here, you can view the latest information of various stocks. In order to avoid investment risks and obtain greater returns, you can also learn about the real US stock investment market information here. At the same time, you can also learn more rich investment experience and skills in the group. If you are investing in US stocks, or you are a US stock enthusiast, welcome to join this group";
 
-const CUSTOM_RULES = [
+const CUSTOM_RULES: SpamRule[] = [
   {
     id: "crypto-signal-promo",
     label: "Crypto signal promo",
@@ -27,10 +29,7 @@ const CUSTOM_RULES = [
 ];
 
 test("normalizeText strips links and punctuation", () => {
-  assert.equal(
-    normalizeText("Hello! https://chat.whatsapp.com/AbCd1234"),
-    "hello"
-  );
+  assert.equal(normalizeText("Hello! https://chat.whatsapp.com/AbCd1234"), "hello");
 });
 
 test("detectStockSpam matches the exact stock spam template with a WhatsApp link", async () => {
@@ -48,7 +47,7 @@ test("detectStockSpam matches a paraphrased stock spam pitch", async () => {
   );
 
   assert.equal(result.matched, true);
-  assert.ok(result.details.matchedPhrases.length >= 4);
+  assert.ok((result.details?.matchedPhrases.length ?? 0) >= 4);
 });
 
 test("detectStockSpam ignores normal community chatter", async () => {
@@ -71,10 +70,17 @@ test("detectSpam uses the best match from a dynamic rule list", async () => {
   assert.equal(result.ruleLabel, "Crypto signal promo");
 });
 
+test("detectStockSpam is safe when given an empty rules list", async () => {
+  const result = await detectStockSpam("suspicious text", { rules: [] });
+
+  assert.equal(result.matched, false);
+  assert.equal(result.score, 0);
+});
+
 test("default spam rules load from config", async () => {
   const rules = await getDefaultSpamRules();
   assert.ok(rules.length >= 1);
-  assert.equal(rules[0].id, "us-stock-group-invite");
+  assert.equal(rules[0]?.id, "us-stock-group-invite");
 });
 
 test("loadSpamRules reads a custom dynamic rules file", async () => {
@@ -92,7 +98,7 @@ test("loadSpamRules reads a custom dynamic rules file", async () => {
   const loaded = await loadSpamRules({ rulesPath });
   assert.equal(loaded.rulesPath, rulesPath);
   assert.equal(loaded.rules.length, 1);
-  assert.equal(loaded.rules[0].id, "crypto-signal-promo");
+  assert.equal(loaded.rules[0]?.id, "crypto-signal-promo");
 });
 
 test("buildSpamRule generates a usable id from the label", () => {
@@ -122,8 +128,8 @@ test("appendSpamRule appends to a custom rules file", async () => {
 
   const loaded = await loadSpamRules({ rulesPath });
   assert.equal(loaded.rules.length, 1);
-  assert.equal(loaded.rules[0].id, "forex-vip-invite");
-  assert.deepEqual(loaded.rules[0].tags, ["forex"]);
+  assert.equal(loaded.rules[0]?.id, "forex-vip-invite");
+  assert.deepEqual(loaded.rules[0]?.tags, ["forex"]);
 });
 
 test("appendSpamRule rejects duplicate ids", async () => {

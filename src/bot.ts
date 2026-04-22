@@ -1,11 +1,18 @@
-import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
-import { promisify } from "node:util";
-import { mkdir, appendFile, writeFile } from "node:fs/promises";
-import { fileURLToPath } from "node:url";
+import { appendFile, mkdir, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import path from "node:path";
-import { createTextCandidates, detectSpam } from "./detection.mjs";
-import { fetchRecentMessages } from "./whatsapp-db.mjs";
+import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
+import { createTextCandidates, detectSpam } from "./detection.ts";
+import type {
+  MessageSnapshot,
+  ScanResult,
+  SpamDetectionOptions,
+  SpamGuardOptions,
+  SuspiciousMatch
+} from "./types.ts";
+import { fetchRecentMessages } from "./whatsapp-db.ts";
 
 const execFileAsync = promisify(execFile);
 const PACKAGE_ROOT = fileURLToPath(new URL("..", import.meta.url));
@@ -13,17 +20,17 @@ const DATA_DIR = path.join(PACKAGE_ROOT, "data");
 const LATEST_RESULTS_PATH = path.join(DATA_DIR, "latest-suspects.json");
 const ALERT_LOG_PATH = path.join(DATA_DIR, "spam-alerts.jsonl");
 
-function buildFingerprint(record) {
-  return createHash("sha1")
-    .update(JSON.stringify(record))
-    .digest("hex")
-    .slice(0, 12);
+function buildFingerprint(record: Record<string, unknown>): string {
+  return createHash("sha1").update(JSON.stringify(record)).digest("hex").slice(0, 12);
 }
 
-export async function findSuspiciousEntries(snapshot, options = {}) {
+export async function findSuspiciousEntries(
+  snapshot: MessageSnapshot,
+  options: SpamDetectionOptions = {}
+): Promise<SuspiciousMatch[]> {
   const minScore = Number(options.minScore ?? 0.72);
   const rules = options.rules ?? [];
-  const matches = [];
+  const matches: SuspiciousMatch[] = [];
 
   for (const row of snapshot.messages ?? []) {
     const candidates = createTextCandidates({
@@ -67,24 +74,24 @@ export async function findSuspiciousEntries(snapshot, options = {}) {
   return matches.sort((left, right) => right.score - left.score);
 }
 
-async function ensureDataDir() {
+async function ensureDataDir(): Promise<void> {
   await mkdir(DATA_DIR, { recursive: true });
 }
 
-function buildNotificationScript(match) {
+function buildNotificationScript(match: SuspiciousMatch): string {
   const title = "WhatsCove";
   const subtitle = match.ruleLabel || "Suspicious spam detected";
   const body = match.text.slice(0, 140);
+  const escape = (value: string) => String(value).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 
-  const escape = (value) => String(value).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
   return `display notification "${escape(body)}" with title "${escape(title)}" subtitle "${escape(subtitle)}"`;
 }
 
-async function notify(match) {
+async function notify(match: SuspiciousMatch): Promise<void> {
   await execFileAsync("osascript", ["-e", buildNotificationScript(match)]);
 }
 
-async function writeArtifacts(snapshot, matches) {
+async function writeArtifacts(snapshot: MessageSnapshot, matches: SuspiciousMatch[]): Promise<void> {
   await ensureDataDir();
   await writeFile(
     LATEST_RESULTS_PATH,
@@ -116,7 +123,7 @@ async function writeArtifacts(snapshot, matches) {
   await appendFile(ALERT_LOG_PATH, `${lines}\n`);
 }
 
-function summarizeMatch(match) {
+function summarizeMatch(match: SuspiciousMatch): string {
   return [
     `[score ${match.score.toFixed(3)}] ${match.ruleLabel || "spam rule"} | ${match.chatName || "unknown chat"} | ${match.senderName || match.fromJid || "unknown sender"} | ${match.messageTimeLocal || "unknown time"}`,
     `text: ${match.text}`,
@@ -125,7 +132,11 @@ function summarizeMatch(match) {
 }
 
 export class WhatsAppSpamGuard {
-  constructor(options = {}) {
+  private readonly options: Required<Omit<SpamGuardOptions, "afterPk">>;
+  private readonly seenFingerprints = new Set<string>();
+  private lastSeenMessagePk: number;
+
+  constructor(options: SpamGuardOptions = {}) {
     this.options = {
       minScore: Number(options.minScore ?? 0.72),
       pollMs: Number(options.pollMs ?? 30_000),
@@ -136,11 +147,10 @@ export class WhatsAppSpamGuard {
       rules: options.rules ?? [],
       rulesPath: options.rulesPath ?? ""
     };
-    this.seenFingerprints = new Set();
     this.lastSeenMessagePk = Number(options.afterPk ?? 0);
   }
 
-  async scanOnce() {
+  async scanOnce(): Promise<ScanResult> {
     const snapshot = await fetchRecentMessages({
       afterPk: this.lastSeenMessagePk,
       limit: this.options.limit,
@@ -166,7 +176,15 @@ export class WhatsAppSpamGuard {
 
     if (this.options.notify) {
       for (const match of freshMatches) {
-        await notify(match);
+        try {
+          await notify(match);
+        } catch (error) {
+          console.warn(
+            `WhatsCove notification failed for ${match.ruleId ?? "unknown-rule"}: ${
+              error instanceof Error ? error.message : String(error)
+            }`
+          );
+        }
       }
     }
 
@@ -179,18 +197,20 @@ export class WhatsAppSpamGuard {
     };
   }
 
-  async watch(onIteration) {
+  async watch(onIteration?: (result: ScanResult) => void | Promise<void>): Promise<never> {
     for (;;) {
       const result = await this.scanOnce();
       if (typeof onIteration === "function") {
         await onIteration(result);
       }
-      await new Promise((resolve) => setTimeout(resolve, this.options.pollMs));
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, this.options.pollMs);
+      });
     }
   }
 }
 
-export function formatScanOutput(result) {
+export function formatScanOutput(result: Pick<ScanResult, "matches">): string {
   if (result.matches.length === 0) {
     return "No suspicious messages matched the active spam rules in the recent WhatsApp message database scan.";
   }

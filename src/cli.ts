@@ -1,8 +1,49 @@
-import { WhatsAppSpamGuard, formatScanOutput } from "./bot.mjs";
-import { appendSpamRule, loadSpamRules } from "./spam-rules.mjs";
+import { readFile } from "node:fs/promises";
+import { WhatsAppSpamGuard, formatScanOutput } from "./bot.ts";
+import { appendSpamRule, loadSpamRules } from "./spam-rules.ts";
 
-function parseArgs(argv) {
-  const parsed = {
+type CliCommand = "scan" | "watch" | "add-rule";
+
+interface ParsedArgs {
+  command: CliCommand;
+  minScore?: number;
+  pollMs: number;
+  notify: boolean;
+  json: boolean;
+  limit: number;
+  lookbackHours: number;
+  chatFilter: string;
+  rulesPath: string;
+  ruleId: string;
+  ruleLabel: string;
+  template: string;
+  templateFile: string;
+  anchorPhrases: string[];
+  tags: string[];
+  requireInviteLink: boolean;
+}
+
+function readFlagValue(flags: string[], index: number, flag: string): string {
+  const value = flags[index + 1];
+  if (typeof value !== "string" || value.startsWith("--")) {
+    throw new Error(`Missing value for ${flag}`);
+  }
+
+  return value;
+}
+
+function readNumberFlag(flags: string[], index: number, flag: string): number {
+  const rawValue = readFlagValue(flags, index, flag);
+  const value = Number(rawValue);
+  if (!Number.isFinite(value)) {
+    throw new Error(`Invalid numeric value for ${flag}: ${rawValue}`);
+  }
+
+  return value;
+}
+
+function parseArgs(argv: string[]): ParsedArgs {
+  const parsed: ParsedArgs = {
     command: "scan",
     minScore: undefined,
     pollMs: 30_000,
@@ -42,96 +83,98 @@ function parseArgs(argv) {
       continue;
     }
 
+    if (flag === "--require-invite-link") {
+      parsed.requireInviteLink = true;
+      continue;
+    }
+
     if (flag === "--min-score") {
-      parsed.minScore = Number(flags[index + 1]);
+      parsed.minScore = readNumberFlag(flags, index, flag);
       index += 1;
       continue;
     }
 
     if (flag === "--poll-seconds") {
-      parsed.pollMs = Number(flags[index + 1]) * 1000;
+      parsed.pollMs = readNumberFlag(flags, index, flag) * 1000;
       index += 1;
       continue;
     }
 
     if (flag === "--limit") {
-      parsed.limit = Number(flags[index + 1]);
+      parsed.limit = readNumberFlag(flags, index, flag);
       index += 1;
       continue;
     }
 
     if (flag === "--lookback-hours") {
-      parsed.lookbackHours = Number(flags[index + 1]);
+      parsed.lookbackHours = readNumberFlag(flags, index, flag);
       index += 1;
       continue;
     }
 
     if (flag === "--chat") {
-      parsed.chatFilter = String(flags[index + 1] ?? "");
+      parsed.chatFilter = readFlagValue(flags, index, flag);
       index += 1;
       continue;
     }
 
     if (flag === "--rules") {
-      parsed.rulesPath = String(flags[index + 1] ?? "");
+      parsed.rulesPath = readFlagValue(flags, index, flag);
       index += 1;
       continue;
     }
 
     if (flag === "--id") {
-      parsed.ruleId = String(flags[index + 1] ?? "");
+      parsed.ruleId = readFlagValue(flags, index, flag);
       index += 1;
       continue;
     }
 
     if (flag === "--label") {
-      parsed.ruleLabel = String(flags[index + 1] ?? "");
+      parsed.ruleLabel = readFlagValue(flags, index, flag);
       index += 1;
       continue;
     }
 
     if (flag === "--template") {
-      parsed.template = String(flags[index + 1] ?? "");
+      parsed.template = readFlagValue(flags, index, flag);
       index += 1;
       continue;
     }
 
     if (flag === "--template-file") {
-      parsed.templateFile = String(flags[index + 1] ?? "");
+      parsed.templateFile = readFlagValue(flags, index, flag);
       index += 1;
       continue;
     }
 
     if (flag === "--anchor") {
-      parsed.anchorPhrases.push(String(flags[index + 1] ?? ""));
+      parsed.anchorPhrases.push(readFlagValue(flags, index, flag));
       index += 1;
       continue;
     }
 
     if (flag === "--tag") {
-      parsed.tags.push(String(flags[index + 1] ?? ""));
+      parsed.tags.push(readFlagValue(flags, index, flag));
       index += 1;
       continue;
     }
 
-    if (flag === "--require-invite-link") {
-      parsed.requireInviteLink = true;
-    }
+    throw new Error(`Unknown flag: ${flag}`);
   }
 
   return parsed;
 }
 
-async function readTemplateText(args) {
+async function readTemplateText(args: ParsedArgs): Promise<string> {
   if (args.templateFile) {
-    const { readFile } = await import("node:fs/promises");
     return readFile(args.templateFile, "utf8");
   }
 
   return args.template;
 }
 
-async function main() {
+async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
 
   if (args.command === "add-rule") {
@@ -159,8 +202,9 @@ async function main() {
   const loadedRules = await loadSpamRules({
     rulesPath: args.rulesPath || undefined
   });
+  const effectiveMinScore = args.minScore ?? 0.72;
   const bot = new WhatsAppSpamGuard({
-    minScore: args.minScore ?? 0.72,
+    minScore: effectiveMinScore,
     pollMs: args.pollMs,
     notify: args.notify,
     limit: args.limit,
@@ -172,7 +216,7 @@ async function main() {
 
   if (args.command === "watch") {
     console.log(
-      `Watching WhatsApp every ${(args.pollMs / 1000).toFixed(0)}s with minimum score ${(args.minScore ?? 0.72).toFixed(2)} across ${loadedRules.rules.length} spam rule(s)`
+      `Watching WhatsApp every ${(args.pollMs / 1000).toFixed(0)}s with minimum score ${effectiveMinScore.toFixed(2)} across ${loadedRules.rules.length} spam rule(s)`
     );
 
     await bot.watch((result) => {
@@ -215,7 +259,7 @@ async function main() {
   console.log(formatScanOutput(result));
 }
 
-main().catch((error) => {
-  console.error(error.message);
+main().catch((error: unknown) => {
+  console.error(error instanceof Error ? error.message : String(error));
   process.exitCode = 1;
 });

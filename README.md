@@ -35,7 +35,7 @@ You can add as many rules as you want to that file, or point the CLI at a differ
 ## Requirements
 
 - macOS
-- Node.js 20+
+- Node.js 24+ recommended
 - WhatsApp Desktop signed in on this Mac
 - Read access to the local WhatsApp container
 
@@ -45,21 +45,21 @@ Run a one-off scan:
 
 ```bash
 cd /Users/jlukanta/Projects/tracecove/whatscove
-node ./src/cli.mjs scan
+node --experimental-strip-types ./src/cli.ts scan
 ```
 
 Run a continuous watcher:
 
 ```bash
 cd /Users/jlukanta/Projects/tracecove/whatscove
-node ./src/cli.mjs watch --poll-seconds 20
+node --experimental-strip-types ./src/cli.ts watch --poll-seconds 20
 ```
 
 Append a new spam rule from the terminal:
 
 ```bash
 cd /Users/jlukanta/Projects/tracecove/whatscove
-node ./src/cli.mjs add-rule \
+node --experimental-strip-types ./src/cli.ts add-rule \
   --label "Crypto signal promo" \
   --template "Join our free crypto signal team for daily bitcoin calls and market updates" \
   --anchor "free crypto signal team" \
@@ -71,7 +71,7 @@ node ./src/cli.mjs add-rule \
 For long spam bodies, keep the template in a text file:
 
 ```bash
-node ./src/cli.mjs add-rule \
+node --experimental-strip-types ./src/cli.ts add-rule \
   --label "Stock invite variant" \
   --template-file /absolute/path/to/template.txt \
   --anchor "us stock knowledge" \
@@ -94,3 +94,4 @@ Useful flags:
 - By default it scans recent inbound WhatsApp messages from the local database, then watches only newly inserted rows on subsequent polls.
 - The default rule pack is just a starting point. The intended workflow is to keep growing the rule list as new spam patterns appear.
 - The safest default is detection-only. If you want, we can add a second phase that opens the suspect chat, copies sender details, or prepares a moderation queue.
+- The codebase now uses TypeScript source files and relies on Node's built-in strip-types runtime flag instead of a separate build step.
