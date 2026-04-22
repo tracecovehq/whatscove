@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { WhatsAppSpamGuard, formatScanOutput } from "./bot.ts";
+import { WhatsAppSpamGuard, formatScanOutput, formatWeakScanOutput } from "./bot.ts";
 import { loadModerationPolicy } from "./moderation-policy.ts";
 import { appendSpamRule, loadSpamRules } from "./spam-rules.ts";
 
@@ -8,6 +8,7 @@ type CliCommand = "scan" | "watch" | "add-rule";
 interface ParsedArgs {
   command: CliCommand;
   minScore?: number;
+  weakMinScore?: number;
   pollMs: number;
   notify: boolean;
   json: boolean;
@@ -49,6 +50,7 @@ function parseArgs(argv: string[]): ParsedArgs {
   const parsed: ParsedArgs = {
     command: "scan",
     minScore: undefined,
+    weakMinScore: undefined,
     pollMs: 30_000,
     notify: true,
     json: false,
@@ -111,6 +113,12 @@ function parseArgs(argv: string[]): ParsedArgs {
 
     if (flag === "--min-score") {
       parsed.minScore = readNumberFlag(flags, index, flag);
+      index += 1;
+      continue;
+    }
+
+    if (flag === "--weak-min-score") {
+      parsed.weakMinScore = readNumberFlag(flags, index, flag);
       index += 1;
       continue;
     }
@@ -230,8 +238,10 @@ async function main(): Promise<void> {
     moderationPolicy.mode = args.moderationMode;
   }
   const effectiveMinScore = args.minScore ?? 0.72;
+  const effectiveWeakMinScore = args.weakMinScore;
   const bot = new WhatsAppSpamGuard({
     minScore: effectiveMinScore,
+    weakMinScore: effectiveWeakMinScore,
     pollMs: args.pollMs,
     notify: args.notify,
     limit: args.limit,
@@ -243,24 +253,34 @@ async function main(): Promise<void> {
   });
 
   if (args.command === "watch") {
-    console.log(
-      `Watching WhatsApp every ${(args.pollMs / 1000).toFixed(0)}s with minimum score ${effectiveMinScore.toFixed(2)} across ${loadedRules.rules.length} spam rule(s)`
-    );
+      console.log(
+        `Watching WhatsApp every ${(args.pollMs / 1000).toFixed(0)}s with minimum score ${effectiveMinScore.toFixed(2)} across ${loadedRules.rules.length} spam rule(s)${
+          typeof effectiveWeakMinScore === "number"
+            ? ` and weak-match logging from ${effectiveWeakMinScore.toFixed(2)}`
+            : ""
+        }`
+      );
 
-    await bot.watch((result) => {
-      const prefix = `[${new Date().toISOString()}]`;
-      if (result.freshMatches.length === 0) {
-        console.log(`${prefix} scan complete, no new spam-rule matches.`);
-        return;
-      }
+      await bot.watch((result) => {
+        const prefix = `[${new Date().toISOString()}]`;
+        if (result.freshMatches.length === 0 && result.freshWeakMatches.length === 0) {
+          console.log(`${prefix} scan complete, no new spam-rule matches.`);
+          return;
+        }
 
       console.log(`${prefix} ${result.freshMatches.length} new suspicious message(s):`);
-      for (const match of result.freshMatches) {
-        console.log(formatScanOutput({ matches: [match] }));
-      }
-      if (result.moderationDecisions.length > 0) {
-        console.log(
-          `${prefix} moderation decisions: ${result.moderationDecisions
+        for (const match of result.freshMatches) {
+          console.log(formatScanOutput({ matches: [match] }));
+        }
+        if (result.freshWeakMatches.length > 0) {
+          console.log(`${prefix} ${result.freshWeakMatches.length} weak testing match(es):`);
+          for (const match of result.freshWeakMatches) {
+            console.log(formatWeakScanOutput({ weakMatches: [match] }));
+          }
+        }
+        if (result.moderationDecisions.length > 0) {
+          console.log(
+            `${prefix} moderation decisions: ${result.moderationDecisions
             .map((decision) => `${decision.action}:${decision.status}`)
             .join(", ")}`
         );
@@ -282,8 +302,12 @@ async function main(): Promise<void> {
           scannedMessages: result.snapshot.messages.length,
           matchCount: result.matches.length,
           freshMatchCount: result.freshMatches.length,
+          weakMatchCount: result.weakMatches.length,
+          freshWeakMatchCount: result.freshWeakMatches.length,
           matches: result.matches,
-          freshMatches: result.freshMatches
+          freshMatches: result.freshMatches,
+          weakMatches: result.weakMatches,
+          freshWeakMatches: result.freshWeakMatches
         },
         null,
         2
@@ -293,6 +317,10 @@ async function main(): Promise<void> {
   }
 
   console.log(formatScanOutput(result));
+  if (typeof effectiveWeakMinScore === "number") {
+    console.log("");
+    console.log(formatWeakScanOutput(result));
+  }
 }
 
 main().catch((error: unknown) => {

@@ -86,6 +86,13 @@ cd /Users/jlukanta/Projects/tracecove/whatscove
 node --experimental-strip-types ./src/cli.ts watch --poll-seconds 20
 ```
 
+Run a watcher that also prints weak testing matches without treating them as real spam:
+
+```bash
+cd /Users/jlukanta/Projects/tracecove/whatscove
+node --experimental-strip-types ./src/cli.ts watch --poll-seconds 20 --weak-min-score 0.10
+```
+
 Run with queued auto-moderation:
 
 ```bash
@@ -127,6 +134,7 @@ node --experimental-strip-types ./src/cli.ts add-rule \
 Useful flags:
 
 - `--min-score 0.80` makes the detector stricter.
+- `--weak-min-score 0.10` prints low-confidence testing matches to the console and JSON output without triggering moderation.
 - `--no-notify` disables macOS notifications.
 - `--json` prints the full scan result as JSON for automation.
 - `--chat "East Bay"` limits the scan to one community or group name.

@@ -3,6 +3,7 @@ import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { findSuspiciousEntries } from "../src/bot.ts";
 import {
   createTextCandidates,
   detectSpam,
@@ -13,7 +14,7 @@ import {
 import { getActionsForMatch, planModerationDecisions } from "../src/moderation.ts";
 import { loadModerationPolicy } from "../src/moderation-policy.ts";
 import { appendSpamRule, buildSpamRule, loadSpamRules } from "../src/spam-rules.ts";
-import type { ModerationPolicy, SpamRule, SuspiciousMatch } from "../src/types.ts";
+import type { MessageSnapshot, ModerationPolicy, SpamRule, SuspiciousMatch } from "../src/types.ts";
 
 const STOCK_SPAM_TEMPLATE =
   "This is a group for sharing US stock knowledge and information for free. Here, you can view the latest information of various stocks. In order to avoid investment risks and obtain greater returns, you can also learn about the real US stock investment market information here. At the same time, you can also learn more rich investment experience and skills in the group. If you are investing in US stocks, or you are a US stock enthusiast, welcome to join this group";
@@ -113,6 +114,66 @@ test("default rules detect the longer blue harbor spam-like phrase", async () =>
 
   assert.equal(result.matched, true);
   assert.equal(result.ruleId, "blue-harbor-signal-group");
+});
+
+test("weak match scanning surfaces low-confidence stock-rule overlaps for testing", async () => {
+  const snapshot: MessageSnapshot = {
+    databasePath: "/tmp/ChatStorage.sqlite",
+    fetchedAt: "2026-04-22T00:00:00.000Z",
+    messages: [
+      {
+        messagePk: 101,
+        messageTimeUtc: "2026-04-22T00:00:00.000Z",
+        messageTimeLocal: "2026-04-21 17:00:00",
+        chatName: "Test Community",
+        chatJid: "123@g.us",
+        fromJid: "user@s.whatsapp.net",
+        senderName: "Test Sender",
+        messageType: 0,
+        text: "I've had greater returns tailoring my resume to the jd. Welcome to join this group",
+        previewTitle: null,
+        previewSummary: null,
+        previewContent1: null,
+        previewContent2: null
+      }
+    ]
+  };
+
+  const result = await findSuspiciousEntries(snapshot, { weakMinScore: 0.1 });
+
+  assert.equal(result.matches.length, 0);
+  assert.equal(result.weakMatches.length, 1);
+  assert.equal(result.weakMatches[0]?.ruleId, "us-stock-group-invite");
+  assert.equal(result.weakMatches[0]?.score, 0.148);
+});
+
+test("weak match scanning respects the weak threshold floor", async () => {
+  const snapshot: MessageSnapshot = {
+    databasePath: "/tmp/ChatStorage.sqlite",
+    fetchedAt: "2026-04-22T00:00:00.000Z",
+    messages: [
+      {
+        messagePk: 102,
+        messageTimeUtc: "2026-04-22T00:00:00.000Z",
+        messageTimeLocal: "2026-04-21 17:00:00",
+        chatName: "Test Community",
+        chatJid: "123@g.us",
+        fromJid: "user@s.whatsapp.net",
+        senderName: "Test Sender",
+        messageType: 0,
+        text: "I've had greater returns tailoring my resume to the jd. Welcome to join this group",
+        previewTitle: null,
+        previewSummary: null,
+        previewContent1: null,
+        previewContent2: null
+      }
+    ]
+  };
+
+  const result = await findSuspiciousEntries(snapshot, { weakMinScore: 0.2 });
+
+  assert.equal(result.matches.length, 0);
+  assert.equal(result.weakMatches.length, 0);
 });
 
 test("loadSpamRules reads a custom dynamic rules file", async () => {

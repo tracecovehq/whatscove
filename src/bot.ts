@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { createTextCandidates, detectSpam } from "./detection.ts";
+import { createTextCandidates, detectSpam, getDefaultSpamRules } from "./detection.ts";
 import { handleModeration } from "./moderation.ts";
 import type {
   MessageSnapshot,
@@ -29,10 +29,15 @@ function buildFingerprint(record: Record<string, unknown>): string {
 export async function findSuspiciousEntries(
   snapshot: MessageSnapshot,
   options: SpamDetectionOptions = {}
-): Promise<SuspiciousMatch[]> {
+): Promise<{
+  matches: SuspiciousMatch[];
+  weakMatches: SuspiciousMatch[];
+}> {
   const minScore = Number(options.minScore ?? 0.72);
-  const rules = options.rules ?? [];
+  const weakMinScore = Number(options.weakMinScore ?? 0);
+  const rules = options.rules ?? (await getDefaultSpamRules());
   const matches: SuspiciousMatch[] = [];
+  const weakMatches: SuspiciousMatch[] = [];
 
   for (const row of snapshot.messages ?? []) {
     const candidates = createTextCandidates({
@@ -45,11 +50,7 @@ export async function findSuspiciousEntries(
 
     for (const text of candidates) {
       const result = await detectSpam(text, { minScore, rules });
-      if (!result.matched) {
-        continue;
-      }
-
-      matches.push({
+      const candidateMatch = {
         fingerprint: buildFingerprint({
           chatName: row.chatName,
           senderName: row.senderName,
@@ -69,11 +70,25 @@ export async function findSuspiciousEntries(
         score: Number(result.score.toFixed(3)),
         reasons: result.reasons,
         details: result.details
-      });
+      };
+
+      if (result.matched) {
+        matches.push(candidateMatch);
+        continue;
+      }
+
+      if (candidateMatch.score < weakMinScore) {
+        continue;
+      }
+
+      weakMatches.push(candidateMatch);
     }
   }
 
-  return matches.sort((left, right) => right.score - left.score);
+  return {
+    matches: matches.sort((left, right) => right.score - left.score),
+    weakMatches: weakMatches.sort((left, right) => right.score - left.score)
+  };
 }
 
 async function ensureDataDir(): Promise<void> {
@@ -133,6 +148,14 @@ function summarizeMatch(match: SuspiciousMatch): string {
   ].join("\n");
 }
 
+function summarizeWeakMatch(match: SuspiciousMatch): string {
+  return [
+    `[weak score ${match.score.toFixed(3)}] ${match.ruleLabel || "spam rule"} | ${match.chatName || "unknown chat"} | ${match.senderName || match.fromJid || "unknown sender"} | ${match.messageTimeLocal || "unknown time"}`,
+    `text: ${match.text}`,
+    `why: ${match.reasons.join("; ") || "low-confidence similarity to an active spam rule"}`
+  ].join("\n");
+}
+
 export class WhatsAppSpamGuard {
   private readonly options: Required<Omit<SpamGuardOptions, "afterPk">>;
   private readonly seenFingerprints = new Set<string>();
@@ -141,6 +164,7 @@ export class WhatsAppSpamGuard {
   constructor(options: SpamGuardOptions = {}) {
     this.options = {
       minScore: Number(options.minScore ?? 0.72),
+      weakMinScore: Number(options.weakMinScore ?? 0),
       pollMs: Number(options.pollMs ?? 30_000),
       notify: options.notify !== false,
       limit: Number(options.limit ?? 250),
@@ -168,8 +192,9 @@ export class WhatsAppSpamGuard {
       lookbackHours: this.options.lookbackHours,
       chatFilter: this.options.chatFilter
     });
-    const matches = await findSuspiciousEntries(snapshot, {
+    const { matches, weakMatches } = await findSuspiciousEntries(snapshot, {
       minScore: this.options.minScore,
+      weakMinScore: this.options.weakMinScore,
       rules: this.options.rules
     });
     const maxSeenPk = snapshot.messages.reduce(
@@ -178,12 +203,18 @@ export class WhatsAppSpamGuard {
     );
     this.lastSeenMessagePk = maxSeenPk;
     const freshMatches = matches.filter((match) => !this.seenFingerprints.has(match.fingerprint));
+    const freshWeakMatches = weakMatches.filter(
+      (match) => !this.seenFingerprints.has(match.fingerprint)
+    );
     const moderationDecisions = await handleModeration(
       freshMatches,
       this.options.moderationPolicy
     );
 
     for (const match of freshMatches) {
+      this.seenFingerprints.add(match.fingerprint);
+    }
+    for (const match of freshWeakMatches) {
       this.seenFingerprints.add(match.fingerprint);
     }
 
@@ -207,6 +238,8 @@ export class WhatsAppSpamGuard {
       snapshot,
       matches,
       freshMatches,
+      weakMatches,
+      freshWeakMatches,
       rulesPath: this.options.rulesPath,
       ruleCount: this.options.rules.length,
       moderationDecisions
@@ -232,4 +265,12 @@ export function formatScanOutput(result: Pick<ScanResult, "matches">): string {
   }
 
   return result.matches.map(summarizeMatch).join("\n\n");
+}
+
+export function formatWeakScanOutput(result: Pick<ScanResult, "weakMatches">): string {
+  if (result.weakMatches.length === 0) {
+    return "No weak spam-rule matches met the testing threshold in the recent WhatsApp message database scan.";
+  }
+
+  return result.weakMatches.map(summarizeWeakMatch).join("\n\n");
 }

@@ -97,6 +97,7 @@ export interface SuspiciousMatch {
 
 export interface SpamDetectionOptions {
   minScore?: number;
+  weakMinScore?: number;
   rules?: SpamRule[];
 }
 
@@ -115,6 +116,8 @@ export interface ScanResult {
   snapshot: MessageSnapshot;
   matches: SuspiciousMatch[];
   freshMatches: SuspiciousMatch[];
+  weakMatches: SuspiciousMatch[];
+  freshWeakMatches: SuspiciousMatch[];
   rulesPath: string;
   ruleCount: number;
   moderationDecisions: ModerationDecision[];
