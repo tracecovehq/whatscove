@@ -20,15 +20,39 @@ export function normalizeText(text: string): string {
     .replace(/\s+/g, " ");
 }
 
-function toTokenSet(text: string): Set<string> {
-  return new Set(normalizeText(text).split(" ").filter(Boolean));
+function normalizeTokens(text: string): string[] {
+  const normalized = normalizeText(text);
+  return normalized ? normalized.split(" ").filter(Boolean) : [];
 }
 
-function overlapRatio(candidateText: string, templateText: string): number {
+function toTokenSet(text: string): Set<string> {
+  return new Set(normalizeTokens(text));
+}
+
+function harmonicMean(left: number, right: number): number {
+  if (left <= 0 || right <= 0) {
+    return 0;
+  }
+
+  return (2 * left * right) / (left + right);
+}
+
+function overlapMetrics(candidateText: string, exemplarText: string): {
+  recall: number;
+  precision: number;
+  balanced: number;
+} {
   const candidateTokens = toTokenSet(candidateText);
-  const templateTokens = toTokenSet(templateText);
-  const overlap = [...templateTokens].filter((token) => candidateTokens.has(token)).length;
-  return templateTokens.size === 0 ? 0 : overlap / templateTokens.size;
+  const exemplarTokens = toTokenSet(exemplarText);
+  const overlap = [...exemplarTokens].filter((token) => candidateTokens.has(token)).length;
+  const recall = exemplarTokens.size === 0 ? 0 : overlap / exemplarTokens.size;
+  const precision = candidateTokens.size === 0 ? 0 : overlap / candidateTokens.size;
+
+  return {
+    recall,
+    precision,
+    balanced: harmonicMean(recall, precision)
+  };
 }
 
 function ngramSet(text: string, size = 5): Set<string> {
@@ -66,9 +90,114 @@ function jaccardSimilarity(left: string, right: string): number {
   return union === 0 ? 0 : intersection / union;
 }
 
+function getRuleExemplars(rule: SpamRule): string[] {
+  return [...new Set([rule.template, ...(rule.examples ?? [])].filter(Boolean))];
+}
+
+function getBestExemplarMatch(text: string, rule: SpamRule): {
+  exemplar: string;
+  recall: number;
+  precision: number;
+  balanced: number;
+  charSimilarity: number;
+} {
+  const exemplars = getRuleExemplars(rule);
+  let best = {
+    exemplar: rule.template,
+    recall: 0,
+    precision: 0,
+    balanced: 0,
+    charSimilarity: 0
+  };
+  let bestScore = -1;
+
+  for (const exemplar of exemplars) {
+    const overlap = overlapMetrics(text, exemplar);
+    const charSimilarity = jaccardSimilarity(text, exemplar);
+    const exemplarScore =
+      overlap.balanced * 0.45 +
+      overlap.recall * 0.25 +
+      overlap.precision * 0.2 +
+      charSimilarity * 0.1;
+
+    if (exemplarScore > bestScore) {
+      bestScore = exemplarScore;
+      best = {
+        exemplar,
+        recall: overlap.recall,
+        precision: overlap.precision,
+        balanced: overlap.balanced,
+        charSimilarity
+      };
+    }
+  }
+
+  return best;
+}
+
+function phraseSimilarity(candidateTokens: string[], candidateNormalized: string, phrase: string): number {
+  const normalizedPhrase = normalizeText(phrase);
+  if (!normalizedPhrase) {
+    return 0;
+  }
+
+  if (candidateNormalized.includes(normalizedPhrase)) {
+    return 1;
+  }
+
+  const phraseTokens = normalizedPhrase.split(" ").filter(Boolean);
+  if (phraseTokens.length === 0 || candidateTokens.length === 0) {
+    return 0;
+  }
+
+  const minWindow = Math.max(1, phraseTokens.length - 2);
+  const maxWindow = Math.min(candidateTokens.length, phraseTokens.length + 2);
+  let best = 0;
+
+  for (let windowSize = minWindow; windowSize <= maxWindow; windowSize += 1) {
+    for (let start = 0; start <= candidateTokens.length - windowSize; start += 1) {
+      const window = candidateTokens.slice(start, start + windowSize).join(" ");
+      const overlap = overlapMetrics(window, normalizedPhrase);
+      const charSimilarity = jaccardSimilarity(window, normalizedPhrase);
+      const score = overlap.balanced * 0.75 + charSimilarity * 0.25;
+      if (score > best) {
+        best = score;
+      }
+    }
+  }
+
+  return best;
+}
+
+function phraseHitThreshold(phrase: string): number {
+  const length = normalizeTokens(phrase).length;
+  if (length <= 2) {
+    return 0.84;
+  }
+  if (length <= 4) {
+    return 0.8;
+  }
+
+  return 0.76;
+}
+
 function phraseHits(text: string, anchorPhrases: string[]): string[] {
   const normalized = normalizeText(text);
-  return anchorPhrases.filter((phrase) => normalized.includes(normalizeText(phrase)));
+  const tokens = normalizeTokens(text);
+  return anchorPhrases.filter(
+    (phrase) => phraseSimilarity(tokens, normalized, phrase) >= phraseHitThreshold(phrase)
+  );
+}
+
+function matchedSignalBuckets(text: string, rule: SpamRule): string[] {
+  const normalized = normalizeText(text);
+  const tokens = normalizeTokens(text);
+
+  return (rule.signalBuckets ?? [])
+    .filter((bucket) =>
+      bucket.terms.some((term) => phraseSimilarity(tokens, normalized, term) >= phraseHitThreshold(term))
+    )
+    .map((bucket) => bucket.name);
 }
 
 export function scoreTextAgainstRule(
@@ -89,18 +218,32 @@ export function scoreTextAgainstRule(
 
   const minScore = Number(options.minScore ?? rule.minScore ?? 0.72);
   const hasInviteLink = INVITE_LINK_RE.test(trimmed);
-  const tokenCoverage = overlapRatio(trimmed, rule.template);
-  const charSimilarity = jaccardSimilarity(trimmed, rule.template);
+  const exemplarMatch = getBestExemplarMatch(trimmed, rule);
+  const tokenCoverage = exemplarMatch.recall;
+  const tokenPrecision = exemplarMatch.precision;
+  const balancedCoverage = exemplarMatch.balanced;
+  const charSimilarity = exemplarMatch.charSimilarity;
   const matchedPhrases = phraseHits(trimmed, rule.anchorPhrases ?? []);
   const phraseCoverage =
     matchedPhrases.length === 0 || rule.anchorPhrases.length === 0
       ? 0
       : matchedPhrases.length / rule.anchorPhrases.length;
+  const matchedBuckets = matchedSignalBuckets(trimmed, rule);
+  const signalCoverage =
+    matchedBuckets.length === 0 || rule.signalBuckets.length === 0
+      ? 0
+      : matchedBuckets.length / rule.signalBuckets.length;
+  const candidateTokenCount = normalizeTokens(trimmed).length;
+  const isShortMessage = candidateTokenCount <= 18;
+
   const score = Math.min(
     0.99,
-    tokenCoverage * 0.55 +
-      charSimilarity * 0.25 +
-      phraseCoverage * 0.15 +
+    tokenCoverage * (isShortMessage ? 0.2 : 0.32) +
+      tokenPrecision * (isShortMessage ? 0.2 : 0.08) +
+      balancedCoverage * (isShortMessage ? 0.26 : 0.18) +
+      charSimilarity * 0.1 +
+      phraseCoverage * 0.14 +
+      signalCoverage * 0.12 +
       (hasInviteLink ? 0.05 : 0)
   );
 
@@ -108,6 +251,11 @@ export function scoreTextAgainstRule(
     (!rule.requireInviteLink || hasInviteLink) &&
     (score >= minScore ||
       tokenCoverage >= 0.8 ||
+      balancedCoverage >= 0.78 ||
+      (balancedCoverage >= 0.68 && matchedPhrases.length >= 2) ||
+      (signalCoverage >= 1 && balancedCoverage >= 0.42) ||
+      (signalCoverage >= 2 / 3 && balancedCoverage >= 0.52) ||
+      (isShortMessage && tokenPrecision >= 0.72 && (matchedPhrases.length >= 2 || signalCoverage >= 1)) ||
       (tokenCoverage >= 0.62 && matchedPhrases.length >= 4) ||
       (tokenCoverage >= 0.55 && matchedPhrases.length >= 5 && hasInviteLink) ||
       (tokenCoverage >= 0.5 && matchedPhrases.length >= 4 && hasInviteLink));
@@ -121,8 +269,16 @@ export function scoreTextAgainstRule(
       `covers ${(tokenCoverage * 100).toFixed(0)}% of the known ${rule.label.toLowerCase()} vocabulary`
     );
   }
+  if (isShortMessage && tokenPrecision >= 0.7) {
+    reasons.push(
+      `looks like a concise paraphrase of the ${rule.label.toLowerCase()} pitch`
+    );
+  }
   if (matchedPhrases.length > 0) {
     reasons.push(`matches ${matchedPhrases.length} ${rule.label.toLowerCase()} anchor phrase(s)`);
+  }
+  if (matchedBuckets.length > 0) {
+    reasons.push(`matches ${matchedBuckets.length} ${rule.label.toLowerCase()} intent bucket(s)`);
   }
   if (rule.requireInviteLink) {
     reasons.push("rule prefers messages that include an invite link");
@@ -137,8 +293,12 @@ export function scoreTextAgainstRule(
     details: {
       hasInviteLink,
       tokenCoverage,
+      tokenPrecision,
+      balancedCoverage,
       charSimilarity,
       matchedPhrases,
+      matchedSignalBuckets: matchedBuckets,
+      matchedExample: exemplarMatch.exemplar,
       ruleId: rule.id,
       ruleLabel: rule.label,
       tags: rule.tags ?? []

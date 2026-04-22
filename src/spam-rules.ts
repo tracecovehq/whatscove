@@ -6,6 +6,7 @@ import type {
   AddSpamRuleInput,
   AppendSpamRuleResult,
   LoadSpamRulesResult,
+  SpamSignalBucket,
   SpamRule
 } from "./types.ts";
 
@@ -34,16 +35,47 @@ function slugifyRuleId(value: string): string {
     .replace(/-{2,}/g, "-");
 }
 
+function normalizeStringList(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value
+        .filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
+        .map((entry) => entry.trim())
+    : [];
+}
+
+function normalizeSignalBuckets(value: unknown, ruleId: string): SpamSignalBucket[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.flatMap((entry, index) => {
+    if (!entry || typeof entry !== "object") {
+      return [];
+    }
+
+    const rawBucket = entry as Partial<SpamSignalBucket> & Record<string, unknown>;
+    const terms = normalizeStringList(rawBucket.terms);
+    if (terms.length === 0) {
+      return [];
+    }
+
+    return [
+      {
+        name: asNonEmptyString(rawBucket.name ?? `${ruleId}-bucket-${index + 1}`, "signal bucket name", ruleId),
+        terms
+      }
+    ];
+  });
+}
+
 function normalizeRule(rawRule: Partial<SpamRule> & Record<string, unknown>, index: number): SpamRule {
   const fallbackId = `rule-${index + 1}`;
   const id = asNonEmptyString(rawRule.id ?? fallbackId, "id", fallbackId);
   const label = asNonEmptyString(rawRule.label ?? id, "label", id);
   const template = asNonEmptyString(rawRule.template, "template", id);
-  const anchorPhrases = Array.isArray(rawRule.anchorPhrases)
-    ? rawRule.anchorPhrases
-        .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
-        .map((value) => value.trim())
-    : [];
+  const examples = normalizeStringList(rawRule.examples);
+  const anchorPhrases = normalizeStringList(rawRule.anchorPhrases);
+  const signalBuckets = normalizeSignalBuckets(rawRule.signalBuckets, id);
   const rawMinScore = rawRule.minScore;
   const minScore =
     typeof rawMinScore === "number" && Number.isFinite(rawMinScore)
@@ -54,12 +86,12 @@ function normalizeRule(rawRule: Partial<SpamRule> & Record<string, unknown>, ind
     id,
     label,
     template,
+    examples,
     anchorPhrases,
+    signalBuckets,
     minScore,
     requireInviteLink: rawRule.requireInviteLink === true,
-    tags: Array.isArray(rawRule.tags)
-      ? rawRule.tags.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
-      : []
+    tags: normalizeStringList(rawRule.tags)
   };
 }
 
@@ -105,18 +137,16 @@ export function buildSpamRule(input: AddSpamRuleInput): SpamRule {
   const label = asNonEmptyString(input.label, "label");
   const template = asNonEmptyString(input.template, "template", label);
   const id = asNonEmptyString(input.id ?? slugifyRuleId(label), "id", label);
-  const anchorPhrases = Array.isArray(input.anchorPhrases)
-    ? input.anchorPhrases
-        .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
-        .map((value) => value.trim())
-    : [];
+  const anchorPhrases = normalizeStringList(input.anchorPhrases);
 
   return normalizeRule(
     {
       id,
       label,
       template,
+      examples: input.examples,
       anchorPhrases,
+      signalBuckets: input.signalBuckets,
       minScore: input.minScore,
       requireInviteLink: input.requireInviteLink,
       tags: input.tags

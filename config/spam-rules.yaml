@@ -10,9 +10,24 @@ rules:
       time, you can also learn more rich investment experience and skills in
       the group. If you are investing in US stocks, or you are a US stock
       enthusiast, welcome to join this group
+    examples:
+      - >-
+        Get US stock knowledge and the latest information on various stocks for
+        free. Join us.
+      - >-
+        Join us for free US stock knowledge and the latest information on
+        various stocks.
+      - >-
+        Free US stock knowledge group. Get the latest information on various
+        stocks and join us.
     anchorPhrases:
       - us stock knowledge
+      - stock knowledge
       - latest information of various stocks
+      - latest information on various stocks
+      - latest information on stocks
+      - various stocks
+      - information for free
       - avoid investment risks
       - greater returns
       - real us stock investment market information
@@ -20,6 +35,27 @@ rules:
       - investing in us stocks
       - us stock enthusiast
       - welcome to join this group
+      - join us
+      - join this group
+    signalBuckets:
+      - name: stock-topic
+        terms:
+          - us stock
+          - us stocks
+          - stock knowledge
+          - various stocks
+      - name: promo-language
+        terms:
+          - for free
+          - latest information
+          - market information
+          - investment experience
+      - name: group-invite-cta
+        terms:
+          - join us
+          - join this group
+          - welcome to join this group
+          - welcome to join
     minScore: 0.72
     requireInviteLink: false
     tags:
@@ -29,9 +65,11 @@ rules:
   - id: cedar-lantern-signal
     label: Cedar lantern trigger
     template: Cedar lantern signal blue harbor seven
+    examples: []
     anchorPhrases:
       - cedar lantern signal
       - blue harbor seven
+    signalBuckets: []
     minScore: 0.8
     requireInviteLink: false
     tags:
@@ -42,11 +80,13 @@ rules:
     template: >-
       Blue Harbor Seven is a private signal group for free market updates. Join
       now.
+    examples: []
     anchorPhrases:
       - blue harbor seven
       - private signal group
       - free market updates
       - join now
+    signalBuckets: []
     minScore: 0.78
     requireInviteLink: false
     tags:

@@ -1,8 +1,15 @@
+export interface SpamSignalBucket {
+  name: string;
+  terms: string[];
+}
+
 export interface SpamRule {
   id: string;
   label: string;
   template: string;
+  examples: string[];
   anchorPhrases: string[];
+  signalBuckets: SpamSignalBucket[];
   minScore?: number;
   requireInviteLink: boolean;
   tags: string[];
@@ -17,7 +24,9 @@ export interface AddSpamRuleInput {
   id?: string;
   label: string;
   template: string;
+  examples?: string[];
   anchorPhrases?: string[];
+  signalBuckets?: SpamSignalBucket[];
   minScore?: number;
   requireInviteLink?: boolean;
   tags?: string[];
@@ -62,8 +71,12 @@ export interface FetchRecentMessagesOptions {
 export interface DetectionDetails {
   hasInviteLink: boolean;
   tokenCoverage: number;
+  tokenPrecision: number;
+  balancedCoverage: number;
   charSimilarity: number;
   matchedPhrases: string[];
+  matchedSignalBuckets: string[];
+  matchedExample?: string;
   ruleId?: string;
   ruleLabel?: string;
   tags: string[];

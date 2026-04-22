@@ -30,11 +30,26 @@ const CUSTOM_RULES: SpamRule[] = [
     label: "Crypto signal promo",
     template:
       "Join our free crypto signal team to get the latest bitcoin and altcoin trading signals, market updates, and profit strategies every day.",
+    examples: ["Free crypto signal team. Join us for daily bitcoin calls and market updates."],
     anchorPhrases: [
       "free crypto signal team",
       "latest bitcoin and altcoin trading signals",
       "market updates",
       "profit strategies every day"
+    ],
+    signalBuckets: [
+      {
+        name: "crypto-topic",
+        terms: ["crypto signal", "bitcoin", "altcoin"]
+      },
+      {
+        name: "promo-language",
+        terms: ["market updates", "profit strategies", "daily calls"]
+      },
+      {
+        name: "group-invite-cta",
+        terms: ["join us", "join our team"]
+      }
     ],
     minScore: 0.68,
     requireInviteLink: true,
@@ -62,6 +77,21 @@ test("detectStockSpam matches a paraphrased stock spam pitch", async () => {
 
   assert.equal(result.matched, true);
   assert.ok((result.details?.matchedPhrases.length ?? 0) >= 4);
+});
+
+test("detectStockSpam matches a short hand-typed stock invite paraphrase", async () => {
+  const result = await detectStockSpam(
+    "Get US stock knowledge and the latest information on various stocks for free. Join us"
+  );
+
+  assert.equal(result.matched, true);
+  assert.ok(result.score >= 0.72);
+  assert.ok((result.details?.matchedPhrases.length ?? 0) >= 2);
+  assert.deepEqual(result.details?.matchedSignalBuckets, [
+    "stock-topic",
+    "promo-language",
+    "group-invite-cta"
+  ]);
 });
 
 test("detectStockSpam ignores normal community chatter", async () => {
@@ -149,7 +179,7 @@ test("weak match scanning surfaces low-confidence stock-rule overlaps for testin
   assert.equal(result.matches.length, 0);
   assert.equal(result.weakMatches.length, 1);
   assert.equal(result.weakMatches[0]?.ruleId, "us-stock-group-invite");
-  assert.equal(result.weakMatches[0]?.score, 0.148);
+  assert.equal(result.weakMatches[0]?.score, 0.281);
 });
 
 test("weak match scanning respects the weak threshold floor", async () => {
@@ -175,7 +205,7 @@ test("weak match scanning respects the weak threshold floor", async () => {
     ]
   };
 
-  const result = await findSuspiciousEntries(snapshot, { weakMinScore: 0.2 });
+  const result = await findSuspiciousEntries(snapshot, { weakMinScore: 0.3 });
 
   assert.equal(result.matches.length, 0);
   assert.equal(result.weakMatches.length, 0);
@@ -201,8 +231,12 @@ test("formatScanOutput produces a readable moderation-style summary", () => {
         details: {
           hasInviteLink: false,
           tokenCoverage: 1,
+          tokenPrecision: 1,
+          balancedCoverage: 1,
           charSimilarity: 1,
           matchedPhrases: ["blue harbor seven", "private signal group"],
+          matchedSignalBuckets: [],
+          matchedExample: "Blue Harbor Seven is a private signal group for free market updates. Join now.",
           ruleId: "blue-harbor-signal-group",
           ruleLabel: "Blue Harbor signal group",
           tags: ["test"]
@@ -237,8 +271,13 @@ test("formatWeakScanOutput produces a readable low-confidence summary", () => {
         details: {
           hasInviteLink: false,
           tokenCoverage: 0.163,
+          tokenPrecision: 0.5,
+          balancedCoverage: 0.245,
           charSimilarity: 0.099,
           matchedPhrases: ["greater returns", "welcome to join this group"],
+          matchedSignalBuckets: [],
+          matchedExample:
+            "This is a group for sharing US stock knowledge and information for free. Here, you can view the latest information of various stocks. In order to avoid investment risks and obtain greater returns, you can also learn about the real US stock investment market information here. At the same time, you can also learn more rich investment experience and skills in the group. If you are investing in US stocks, or you are a US stock enthusiast, welcome to join this group",
           ruleId: "us-stock-group-invite",
           ruleLabel: "US stock promo invite",
           tags: ["stocks"]
@@ -268,14 +307,17 @@ test("sortMatchesChronologically orders the console feed oldest to newest", () =
       text: "Newest",
       score: 0.2,
       reasons: [],
-      details: {
-        hasInviteLink: false,
-        tokenCoverage: 0,
-        charSimilarity: 0,
-        matchedPhrases: [],
-        ruleId: "us-stock-group-invite",
-        ruleLabel: "US stock promo invite",
-        tags: []
+        details: {
+          hasInviteLink: false,
+          tokenCoverage: 0,
+          tokenPrecision: 0,
+          balancedCoverage: 0,
+          charSimilarity: 0,
+          matchedPhrases: [],
+          matchedSignalBuckets: [],
+          ruleId: "us-stock-group-invite",
+          ruleLabel: "US stock promo invite",
+          tags: []
       }
     },
     {
@@ -292,14 +334,17 @@ test("sortMatchesChronologically orders the console feed oldest to newest", () =
       text: "Oldest",
       score: 0.95,
       reasons: [],
-      details: {
-        hasInviteLink: false,
-        tokenCoverage: 1,
-        charSimilarity: 1,
-        matchedPhrases: [],
-        ruleId: "cedar-lantern-signal",
-        ruleLabel: "Cedar lantern trigger",
-        tags: []
+        details: {
+          hasInviteLink: false,
+          tokenCoverage: 1,
+          tokenPrecision: 1,
+          balancedCoverage: 1,
+          charSimilarity: 1,
+          matchedPhrases: [],
+          matchedSignalBuckets: [],
+          ruleId: "cedar-lantern-signal",
+          ruleLabel: "Cedar lantern trigger",
+          tags: []
       }
     },
     {
@@ -316,14 +361,17 @@ test("sortMatchesChronologically orders the console feed oldest to newest", () =
       text: "Middle",
       score: 0.95,
       reasons: [],
-      details: {
-        hasInviteLink: false,
-        tokenCoverage: 1,
-        charSimilarity: 1,
-        matchedPhrases: [],
-        ruleId: "blue-harbor-signal-group",
-        ruleLabel: "Blue Harbor signal group",
-        tags: []
+        details: {
+          hasInviteLink: false,
+          tokenCoverage: 1,
+          tokenPrecision: 1,
+          balancedCoverage: 1,
+          charSimilarity: 1,
+          matchedPhrases: [],
+          matchedSignalBuckets: [],
+          ruleId: "blue-harbor-signal-group",
+          ruleLabel: "Blue Harbor signal group",
+          tags: []
       }
     }
   ]);
