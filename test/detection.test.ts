@@ -3,7 +3,13 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { detectSpam, detectStockSpam, getDefaultSpamRules, normalizeText } from "../src/detection.ts";
+import {
+  createTextCandidates,
+  detectSpam,
+  detectStockSpam,
+  getDefaultSpamRules,
+  normalizeText
+} from "../src/detection.ts";
 import { appendSpamRule, buildSpamRule, loadSpamRules } from "../src/spam-rules.ts";
 import type { SpamRule } from "../src/types.ts";
 
@@ -88,6 +94,14 @@ test("default rules detect the short cedar lantern trigger phrase", async () => 
 
   assert.equal(result.matched, true);
   assert.equal(result.ruleId, "cedar-lantern-signal");
+});
+
+test("createTextCandidates keeps short test trigger phrases", () => {
+  const candidates = createTextCandidates({
+    value: "Cedar lantern signal: blue harbor seven"
+  });
+
+  assert.deepEqual(candidates, ["Cedar lantern signal: blue harbor seven"]);
 });
 
 test("default rules detect the longer blue harbor spam-like phrase", async () => {

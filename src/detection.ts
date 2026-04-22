@@ -4,6 +4,7 @@ import type { DetectionResult, SpamDetectionOptions, SpamRule } from "./types.ts
 const INVITE_LINK_RE = /\b(?:https?:\/\/)?(?:chat\.whatsapp\.com\/[A-Za-z0-9]+|wa\.me\/\S+)\b/i;
 const URL_RE =
   /\b(?:https?:\/\/)?(?:chat\.whatsapp\.com\/[A-Za-z0-9]+|wa\.me\/\S+|www\.\S+|\S+\.\S{2,})\b/gi;
+const MIN_CANDIDATE_LENGTH = 12;
 
 function stripUrls(text: string): string {
   return text.replace(URL_RE, " ");
@@ -204,7 +205,7 @@ export function createTextCandidates(row: {
   const values = [row.value, row.name, row.description]
     .filter((value): value is string => typeof value === "string")
     .map((value) => value.trim())
-    .filter((value) => value.length >= 40);
+    .filter((value) => value.length >= MIN_CANDIDATE_LENGTH);
 
   return [...new Set(values)];
 }
