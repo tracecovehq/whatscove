@@ -84,6 +84,7 @@ export function planModerationDecisions(
         chatJid: match.chatJid,
         senderName: match.senderName,
         fromJid: match.fromJid,
+        messageTimeLocal: match.messageTimeLocal,
         messagePk: match.messagePk,
         ruleId: match.ruleId,
         ruleLabel: match.ruleLabel,

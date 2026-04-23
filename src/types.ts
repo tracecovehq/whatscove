@@ -186,6 +186,7 @@ export interface ModerationDecision {
   chatJid: string;
   senderName: string;
   fromJid: string;
+  messageTimeLocal: string;
   messagePk: number;
   ruleId?: string;
   ruleLabel?: string;

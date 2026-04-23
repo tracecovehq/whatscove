@@ -740,6 +740,7 @@ test("planModerationDecisions creates queued actions for real spam matches", () 
     decisions.map((decision) => decision.action),
     ["delete_message", "remove_sender"]
   );
+  assert.ok(decisions.every((decision) => decision.messageTimeLocal === "2026-04-22 15:00:00"));
 });
 
 test("getActionsForMatch applies per-rule moderation overrides", () => {

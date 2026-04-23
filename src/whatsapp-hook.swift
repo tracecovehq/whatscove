@@ -7,7 +7,7 @@ struct ModerationDecision: Decodable {
   let chatName: String
   let senderName: String
   let fromJid: String
-  let messageTimeLocal: String
+  let messageTimeLocal: String?
   let text: String
 }
 
@@ -193,7 +193,9 @@ func messageMatchScore(description: String, decision: ModerationDecision) -> Int
   if normalizedDescription.contains(String(normalizedText.prefix(40))) {
     score += 4
   }
-  if !decision.messageTimeLocal.isEmpty, normalizedDescription.contains(normalized(decision.messageTimeLocal)) {
+  if let messageTimeLocal = decision.messageTimeLocal,
+     !messageTimeLocal.isEmpty,
+     normalizedDescription.contains(normalized(messageTimeLocal)) {
     score += 2
   }
   if !decision.senderName.isEmpty, normalizedDescription.contains(normalized(decision.senderName)) {
