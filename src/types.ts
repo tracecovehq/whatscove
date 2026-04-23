@@ -3,6 +3,18 @@ export interface SpamSignalBucket {
   terms: string[];
 }
 
+export interface SpamStructuralPatternBucketRequirement {
+  name: string;
+  minHits: number;
+}
+
+export interface SpamStructuralPattern {
+  name: string;
+  requireInviteLink: boolean;
+  scoreBoost: number;
+  buckets: SpamStructuralPatternBucketRequirement[];
+}
+
 export interface SpamRule {
   id: string;
   label: string;
@@ -10,6 +22,7 @@ export interface SpamRule {
   examples: string[];
   anchorPhrases: string[];
   signalBuckets: SpamSignalBucket[];
+  structuralPatterns: SpamStructuralPattern[];
   minScore?: number;
   requireInviteLink: boolean;
   tags: string[];
@@ -27,6 +40,7 @@ export interface AddSpamRuleInput {
   examples?: string[];
   anchorPhrases?: string[];
   signalBuckets?: SpamSignalBucket[];
+  structuralPatterns?: SpamStructuralPattern[];
   minScore?: number;
   requireInviteLink?: boolean;
   tags?: string[];
@@ -76,6 +90,7 @@ export interface DetectionDetails {
   charSimilarity: number;
   matchedPhrases: string[];
   matchedSignalBuckets: string[];
+  matchedStructuralPatterns: string[];
   matchedExample?: string;
   ruleId?: string;
   ruleLabel?: string;

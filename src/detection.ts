@@ -6,6 +6,11 @@ const URL_RE =
   /\b(?:https?:\/\/)?(?:chat\.whatsapp\.com\/[A-Za-z0-9]+|wa\.me\/\S+|www\.\S+|\S+\.\S{2,})\b/gi;
 const MIN_CANDIDATE_LENGTH = 12;
 
+interface SignalBucketMatch {
+  name: string;
+  hitCount: number;
+}
+
 function stripUrls(text: string): string {
   return text.replace(URL_RE, " ");
 }
@@ -189,15 +194,45 @@ function phraseHits(text: string, anchorPhrases: string[]): string[] {
   );
 }
 
-function matchedSignalBuckets(text: string, rule: SpamRule): string[] {
+function signalBucketMatches(text: string, rule: SpamRule): SignalBucketMatch[] {
   const normalized = normalizeText(text);
   const tokens = normalizeTokens(text);
 
   return (rule.signalBuckets ?? [])
-    .filter((bucket) =>
-      bucket.terms.some((term) => phraseSimilarity(tokens, normalized, term) >= phraseHitThreshold(term))
-    )
-    .map((bucket) => bucket.name);
+    .map((bucket) => ({
+      name: bucket.name,
+      hitCount: bucket.terms.filter(
+        (term) => phraseSimilarity(tokens, normalized, term) >= phraseHitThreshold(term)
+      ).length
+    }))
+    .filter((bucket) => bucket.hitCount > 0);
+}
+
+function matchedStructuralPatterns(
+  rule: SpamRule,
+  bucketMatches: SignalBucketMatch[],
+  hasInviteLink: boolean
+): string[] {
+  const bucketHitCounts = new Map(bucketMatches.map((bucket) => [bucket.name, bucket.hitCount]));
+
+  return (rule.structuralPatterns ?? [])
+    .filter((pattern) => {
+      if (pattern.requireInviteLink && !hasInviteLink) {
+        return false;
+      }
+
+      return pattern.buckets.every(
+        (bucket) => (bucketHitCounts.get(bucket.name) ?? 0) >= bucket.minHits
+      );
+    })
+    .map((pattern) => pattern.name);
+}
+
+function structuralPatternScoreBoost(rule: SpamRule, patternNames: string[]): number {
+  const matchedNames = new Set(patternNames);
+  return (rule.structuralPatterns ?? [])
+    .filter((pattern) => matchedNames.has(pattern.name))
+    .reduce((total, pattern) => total + pattern.scoreBoost, 0);
 }
 
 export function scoreTextAgainstRule(
@@ -228,11 +263,14 @@ export function scoreTextAgainstRule(
     matchedPhrases.length === 0 || rule.anchorPhrases.length === 0
       ? 0
       : matchedPhrases.length / rule.anchorPhrases.length;
-  const matchedBuckets = matchedSignalBuckets(trimmed, rule);
+  const bucketMatches = signalBucketMatches(trimmed, rule);
+  const matchedBuckets = bucketMatches.map((bucket) => bucket.name);
   const signalCoverage =
     matchedBuckets.length === 0 || rule.signalBuckets.length === 0
       ? 0
       : matchedBuckets.length / rule.signalBuckets.length;
+  const structuralPatterns = matchedStructuralPatterns(rule, bucketMatches, hasInviteLink);
+  const structuralBoost = structuralPatternScoreBoost(rule, structuralPatterns);
   const candidateTokenCount = normalizeTokens(trimmed).length;
   const isShortMessage = candidateTokenCount <= 18;
 
@@ -244,6 +282,7 @@ export function scoreTextAgainstRule(
       charSimilarity * 0.1 +
       phraseCoverage * 0.14 +
       signalCoverage * 0.12 +
+      structuralBoost +
       (hasInviteLink ? 0.05 : 0)
   );
 
@@ -255,6 +294,7 @@ export function scoreTextAgainstRule(
       (balancedCoverage >= 0.68 && matchedPhrases.length >= 2) ||
       (signalCoverage >= 1 && balancedCoverage >= 0.42) ||
       (signalCoverage >= 2 / 3 && balancedCoverage >= 0.52) ||
+      structuralPatterns.length > 0 ||
       (isShortMessage && tokenPrecision >= 0.72 && (matchedPhrases.length >= 2 || signalCoverage >= 1)) ||
       (tokenCoverage >= 0.62 && matchedPhrases.length >= 4) ||
       (tokenCoverage >= 0.55 && matchedPhrases.length >= 5 && hasInviteLink) ||
@@ -280,6 +320,9 @@ export function scoreTextAgainstRule(
   if (matchedBuckets.length > 0) {
     reasons.push(`matches ${matchedBuckets.length} ${rule.label.toLowerCase()} intent bucket(s)`);
   }
+  for (const pattern of structuralPatterns) {
+    reasons.push(`matches ${pattern}`);
+  }
   if (rule.requireInviteLink) {
     reasons.push("rule prefers messages that include an invite link");
   }
@@ -298,6 +341,7 @@ export function scoreTextAgainstRule(
       charSimilarity,
       matchedPhrases,
       matchedSignalBuckets: matchedBuckets,
+      matchedStructuralPatterns: structuralPatterns,
       matchedExample: exemplarMatch.exemplar,
       ruleId: rule.id,
       ruleLabel: rule.label,

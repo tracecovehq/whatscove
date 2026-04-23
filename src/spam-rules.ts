@@ -7,6 +7,8 @@ import type {
   AppendSpamRuleResult,
   LoadSpamRulesResult,
   SpamSignalBucket,
+  SpamStructuralPattern,
+  SpamStructuralPatternBucketRequirement,
   SpamRule
 } from "./types.ts";
 
@@ -68,6 +70,64 @@ function normalizeSignalBuckets(value: unknown, ruleId: string): SpamSignalBucke
   });
 }
 
+function normalizePositiveNumber(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
+function normalizeStructuralPatternBuckets(
+  value: unknown,
+  ruleId: string
+): SpamStructuralPatternBucketRequirement[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.flatMap((entry) => {
+    if (!entry || typeof entry !== "object") {
+      return [];
+    }
+
+    const rawRequirement = entry as Partial<SpamStructuralPatternBucketRequirement> & Record<string, unknown>;
+    return [
+      {
+        name: asNonEmptyString(rawRequirement.name, "structural pattern bucket name", ruleId),
+        minHits: Math.max(1, Math.floor(normalizePositiveNumber(rawRequirement.minHits, 1)))
+      }
+    ];
+  });
+}
+
+function normalizeStructuralPatterns(value: unknown, ruleId: string): SpamStructuralPattern[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.flatMap((entry, index) => {
+    if (!entry || typeof entry !== "object") {
+      return [];
+    }
+
+    const rawPattern = entry as Partial<SpamStructuralPattern> & Record<string, unknown>;
+    const buckets = normalizeStructuralPatternBuckets(rawPattern.buckets, ruleId);
+    if (buckets.length === 0) {
+      return [];
+    }
+
+    return [
+      {
+        name: asNonEmptyString(
+          rawPattern.name ?? `${ruleId}-structural-pattern-${index + 1}`,
+          "structural pattern name",
+          ruleId
+        ),
+        requireInviteLink: rawPattern.requireInviteLink === true,
+        scoreBoost: normalizePositiveNumber(rawPattern.scoreBoost, 0.2),
+        buckets
+      }
+    ];
+  });
+}
+
 function normalizeRule(rawRule: Partial<SpamRule> & Record<string, unknown>, index: number): SpamRule {
   const fallbackId = `rule-${index + 1}`;
   const id = asNonEmptyString(rawRule.id ?? fallbackId, "id", fallbackId);
@@ -76,6 +136,7 @@ function normalizeRule(rawRule: Partial<SpamRule> & Record<string, unknown>, ind
   const examples = normalizeStringList(rawRule.examples);
   const anchorPhrases = normalizeStringList(rawRule.anchorPhrases);
   const signalBuckets = normalizeSignalBuckets(rawRule.signalBuckets, id);
+  const structuralPatterns = normalizeStructuralPatterns(rawRule.structuralPatterns, id);
   const rawMinScore = rawRule.minScore;
   const minScore =
     typeof rawMinScore === "number" && Number.isFinite(rawMinScore)
@@ -89,6 +150,7 @@ function normalizeRule(rawRule: Partial<SpamRule> & Record<string, unknown>, ind
     examples,
     anchorPhrases,
     signalBuckets,
+    structuralPatterns,
     minScore,
     requireInviteLink: rawRule.requireInviteLink === true,
     tags: normalizeStringList(rawRule.tags)
@@ -147,6 +209,7 @@ export function buildSpamRule(input: AddSpamRuleInput): SpamRule {
       examples: input.examples,
       anchorPhrases,
       signalBuckets: input.signalBuckets,
+      structuralPatterns: input.structuralPatterns,
       minScore: input.minScore,
       requireInviteLink: input.requireInviteLink,
       tags: input.tags

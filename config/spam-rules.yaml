@@ -20,6 +20,11 @@ rules:
       - >-
         Free US stock knowledge group. Get the latest information on various
         stocks and join us.
+      - >-
+        This is a group that shares hot investment information for free every
+        day, including stocks, options, funds, bonds, foreign exchange, and
+        cryptocurrencies. Here you can get more investment information,
+        knowledge, and skills. Investment enthusiasts are welcome to join.
     anchorPhrases:
       - us stock knowledge
       - stock knowledge
@@ -32,30 +37,58 @@ rules:
       - greater returns
       - real us stock investment market information
       - investment experience and skills
+      - hot investment information
+      - investment information and knowledge and skills
+      - stocks options funds bonds
+      - foreign exchange cryptocurrencies
+      - investment enthusiasts
       - investing in us stocks
       - us stock enthusiast
       - welcome to join this group
+      - welcome to join
       - join us
       - join this group
     signalBuckets:
-      - name: stock-topic
+      - name: finance-topic
         terms:
           - us stock
           - us stocks
           - stock knowledge
           - various stocks
+          - stocks
+          - options
+          - funds
+          - bonds
+          - foreign exchange
+          - cryptocurrencies
       - name: promo-language
         terms:
           - for free
+          - free every day
           - latest information
+          - hot investment information
+          - investment information
+          - knowledge and skills
           - market information
           - investment experience
+          - investment enthusiasts
       - name: group-invite-cta
         terms:
           - join us
           - join this group
           - welcome to join this group
           - welcome to join
+    structuralPatterns:
+      - name: financial group invite spam pattern
+        requireInviteLink: true
+        scoreBoost: 0.22
+        buckets:
+          - name: finance-topic
+            minHits: 3
+          - name: promo-language
+            minHits: 2
+          - name: group-invite-cta
+            minHits: 1
     minScore: 0.72
     requireInviteLink: false
     tags:

@@ -55,6 +55,7 @@ const CUSTOM_RULES: SpamRule[] = [
         terms: ["join us", "join our team"]
       }
     ],
+    structuralPatterns: [],
     minScore: 0.68,
     requireInviteLink: true,
     tags: ["crypto", "promo"]
@@ -83,6 +84,19 @@ test("detectStockSpam matches a paraphrased stock spam pitch", async () => {
   assert.ok((result.details?.matchedPhrases.length ?? 0) >= 4);
 });
 
+test("detectStockSpam matches broad investment asset-list invite spam", async () => {
+  const result = await detectStockSpam(
+    "This is a group that shares hot investment information for free every day, including (stocks, options, funds, bonds, foreign exchange, cryptocurrencies, etc.). Here you can get more investment information and knowledge and skills, which can help your investment go more smoothly. Investment enthusiasts are welcome to join.\nhttps://chat.whatsapp.com/EdW3Vs4bZnILXiKNMcBwt0"
+  );
+
+  assert.equal(result.matched, true);
+  assert.ok(result.score >= 0.9);
+  assert.ok(result.reasons.includes("matches financial group invite spam pattern"));
+  assert.deepEqual(result.details?.matchedStructuralPatterns, [
+    "financial group invite spam pattern"
+  ]);
+});
+
 test("detectStockSpam matches a short hand-typed stock invite paraphrase", async () => {
   const result = await detectStockSpam(
     "Get US stock knowledge and the latest information on various stocks for free. Join us"
@@ -92,7 +106,7 @@ test("detectStockSpam matches a short hand-typed stock invite paraphrase", async
   assert.ok(result.score >= 0.72);
   assert.ok((result.details?.matchedPhrases.length ?? 0) >= 2);
   assert.deepEqual(result.details?.matchedSignalBuckets, [
-    "stock-topic",
+    "finance-topic",
     "promo-language",
     "group-invite-cta"
   ]);
@@ -105,6 +119,14 @@ test("detectStockSpam ignores normal community chatter", async () => {
 
   assert.equal(result.matched, false);
   assert.ok(result.score < 0.5);
+});
+
+test("detectStockSpam does not hard-match finance chatter without an invite link", async () => {
+  const result = await detectStockSpam(
+    "I am comparing stocks, options, funds, bonds, foreign exchange, and crypto for a personal portfolio. Happy to discuss investment information and knowledge if anyone is curious."
+  );
+
+  assert.equal(result.matched, false);
 });
 
 test("detectSpam uses the best match from a dynamic rule list", async () => {
@@ -129,6 +151,7 @@ test("default spam rules load from config", async () => {
   const rules = await getDefaultSpamRules();
   assert.ok(rules.length >= 3);
   assert.equal(rules[0]?.id, "us-stock-group-invite");
+  assert.equal(rules[0]?.structuralPatterns[0]?.name, "financial group invite spam pattern");
 });
 
 test("default rules detect the short cedar lantern trigger phrase", async () => {
@@ -183,7 +206,8 @@ test("weak match scanning surfaces low-confidence stock-rule overlaps for testin
   assert.equal(result.matches.length, 0);
   assert.equal(result.weakMatches.length, 1);
   assert.equal(result.weakMatches[0]?.ruleId, "us-stock-group-invite");
-  assert.equal(result.weakMatches[0]?.score, 0.281);
+  assert.ok((result.weakMatches[0]?.score ?? 0) >= 0.25);
+  assert.ok((result.weakMatches[0]?.score ?? 0) < 0.3);
 });
 
 test("weak match scanning respects the weak threshold floor", async () => {
@@ -240,6 +264,7 @@ test("formatScanOutput produces a readable moderation-style summary", () => {
           charSimilarity: 1,
           matchedPhrases: ["blue harbor seven", "private signal group"],
           matchedSignalBuckets: [],
+          matchedStructuralPatterns: [],
           matchedExample: "Blue Harbor Seven is a private signal group for free market updates. Join now.",
           ruleId: "blue-harbor-signal-group",
           ruleLabel: "Blue Harbor signal group",
@@ -280,6 +305,7 @@ test("formatWeakScanOutput produces a readable low-confidence summary", () => {
           charSimilarity: 0.099,
           matchedPhrases: ["greater returns", "welcome to join this group"],
           matchedSignalBuckets: [],
+          matchedStructuralPatterns: [],
           matchedExample:
             "This is a group for sharing US stock knowledge and information for free. Here, you can view the latest information of various stocks. In order to avoid investment risks and obtain greater returns, you can also learn about the real US stock investment market information here. At the same time, you can also learn more rich investment experience and skills in the group. If you are investing in US stocks, or you are a US stock enthusiast, welcome to join this group",
           ruleId: "us-stock-group-invite",
@@ -319,6 +345,7 @@ test("sortMatchesChronologically orders the console feed oldest to newest", () =
           charSimilarity: 0,
           matchedPhrases: [],
           matchedSignalBuckets: [],
+          matchedStructuralPatterns: [],
           ruleId: "us-stock-group-invite",
           ruleLabel: "US stock promo invite",
           tags: []
@@ -346,6 +373,7 @@ test("sortMatchesChronologically orders the console feed oldest to newest", () =
           charSimilarity: 1,
           matchedPhrases: [],
           matchedSignalBuckets: [],
+          matchedStructuralPatterns: [],
           ruleId: "cedar-lantern-signal",
           ruleLabel: "Cedar lantern trigger",
           tags: []
@@ -373,6 +401,7 @@ test("sortMatchesChronologically orders the console feed oldest to newest", () =
           charSimilarity: 1,
           matchedPhrases: [],
           matchedSignalBuckets: [],
+          matchedStructuralPatterns: [],
           ruleId: "blue-harbor-signal-group",
           ruleLabel: "Blue Harbor signal group",
           tags: []

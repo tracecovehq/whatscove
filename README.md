@@ -31,6 +31,7 @@ Each rule can define:
 - `examples`: optional shorter or alternate phrasings from the same spam family
 - `anchorPhrases`: optional phrases that strengthen a match
 - `signalBuckets`: optional intent buckets such as topic, promo language, and join calls-to-action
+- `structuralPatterns`: optional recipes that require multiple hits across named signal buckets, such as three finance-topic terms plus two promo-language terms plus a join CTA and an invite link
 - `minScore`: optional per-rule threshold override
 - `requireInviteLink`: optional flag for invite-link-heavy spam
 - `tags`: optional metadata for downstream automation
@@ -157,6 +158,7 @@ Useful flags:
 - By default it scans recent inbound WhatsApp messages from the local database, then watches only newly inserted rows on subsequent polls.
 - The default rule pack is just a starting point. The intended workflow is to keep growing the rule list as new spam patterns appear.
 - Short hand-typed spam paraphrases work best when a rule includes both alternate `examples` and a few high-signal `signalBuckets`.
+- Broad spam variants work best when `signalBuckets` describe the reusable ingredients and `structuralPatterns` describe how many ingredients must appear together.
 - If both YAML and JSON versions of the same config exist, WhatsCove prefers YAML automatically.
 - The safest default for moderation is `queue`, which records removal/ban decisions without executing destructive WhatsApp-side actions.
 - The codebase now uses TypeScript source files and relies on Node's built-in strip-types runtime flag instead of a separate build step.
