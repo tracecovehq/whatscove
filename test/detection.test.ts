@@ -16,7 +16,11 @@ import {
   getDefaultSpamRules,
   normalizeText
 } from "../src/detection.ts";
-import { getActionsForMatch, planModerationDecisions } from "../src/moderation.ts";
+import {
+  getActionsForMatch,
+  getBundledHookCommand,
+  planModerationDecisions
+} from "../src/moderation.ts";
 import { loadModerationPolicy } from "../src/moderation-policy.ts";
 import { appendSpamRule, buildSpamRule, loadSpamRules } from "../src/spam-rules.ts";
 import type { MessageSnapshot, ModerationPolicy, SpamRule, SuspiciousMatch } from "../src/types.ts";
@@ -598,4 +602,11 @@ test("getActionsForMatch applies per-rule moderation overrides", () => {
   } as SuspiciousMatch;
 
   assert.deepEqual(getActionsForMatch(match, policy), ["notify"]);
+});
+
+test("getBundledHookCommand points at the bundled WhatsApp hook", () => {
+  const hook = getBundledHookCommand();
+
+  assert.equal(hook.command, "/usr/bin/swift");
+  assert.match(hook.args[0] ?? "", /src\/whatsapp-hook\.swift$/);
 });

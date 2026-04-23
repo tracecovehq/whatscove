@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import path from "node:path";
 import {
   appendModerationEvents,
   appendModerationQueue,
@@ -13,6 +15,9 @@ import type {
   ModerationState,
   SuspiciousMatch
 } from "./types.ts";
+
+const PACKAGE_ROOT = fileURLToPath(new URL("..", import.meta.url));
+const BUNDLED_HOOK_PATH = path.join(PACKAGE_ROOT, "src", "whatsapp-hook.swift");
 
 function buildDecisionId(match: SuspiciousMatch, action: ModerationActionType): string {
   return createHash("sha1")
@@ -78,16 +83,21 @@ export function planModerationDecisions(
   return decisions;
 }
 
-async function runHook(policy: ModerationPolicy, decision: ModerationDecision): Promise<void> {
-  if (!policy.hookCommand) {
-    throw new Error(
-      `No moderation hook configured for action ${decision.action}; set hookCommand in moderation-policy.json`
-    );
-  }
+export function getBundledHookCommand(): { command: string; args: string[] } {
+  return {
+    command: "/usr/bin/swift",
+    args: [BUNDLED_HOOK_PATH]
+  };
+}
 
+async function runProcess(
+  command: string,
+  args: string[],
+  decision: ModerationDecision
+): Promise<void> {
   await new Promise<void>((resolve, reject) => {
-    const child = spawn(policy.hookCommand, {
-      shell: true,
+    const child = spawn(command, args, {
+      shell: false,
       stdio: ["pipe", "pipe", "pipe"]
     });
     let stderr = "";
@@ -112,6 +122,42 @@ async function runHook(policy: ModerationPolicy, decision: ModerationDecision): 
     child.stdin.write(JSON.stringify(decision));
     child.stdin.end();
   });
+}
+
+async function runHook(policy: ModerationPolicy, decision: ModerationDecision): Promise<void> {
+  if (policy.hookCommand) {
+    await new Promise<void>((resolve, reject) => {
+      const child = spawn(policy.hookCommand, {
+        shell: true,
+        stdio: ["pipe", "pipe", "pipe"]
+      });
+      let stderr = "";
+
+      child.stderr.on("data", (chunk) => {
+        stderr += chunk.toString();
+      });
+
+      child.on("error", reject);
+      child.on("close", (code) => {
+        if (code === 0) {
+          resolve();
+          return;
+        }
+        reject(
+          new Error(
+            stderr.trim() || `Moderation hook exited with non-zero status ${String(code)}`
+          )
+        );
+      });
+
+      child.stdin.write(JSON.stringify(decision));
+      child.stdin.end();
+    });
+    return;
+  }
+
+  const bundled = getBundledHookCommand();
+  await runProcess(bundled.command, bundled.args, decision);
 }
 
 function applyLocalSideEffects(state: ModerationState, decision: ModerationDecision): void {
