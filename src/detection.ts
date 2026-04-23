@@ -406,7 +406,10 @@ export function createTextCandidates(row: {
   name?: string | null;
   description?: string | null;
 }): string[] {
-  const values = [row.value, row.name, row.description]
+  const combined = [row.value, row.name, row.description]
+    .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+    .join("\n");
+  const values = [row.value, row.name, row.description, combined]
     .filter((value): value is string => typeof value === "string")
     .map((value) => value.trim())
     .filter((value) => value.length >= MIN_CANDIDATE_LENGTH);

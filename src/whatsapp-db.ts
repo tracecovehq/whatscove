@@ -58,7 +58,15 @@ function buildMessageQuery(options: FetchRecentMessagesOptions): string {
         m.ZFROMJID
       ) AS senderName,
       m.ZMESSAGETYPE AS messageType,
+      m.ZGROUPEVENTTYPE AS groupEventType,
       m.ZTEXT AS text,
+      m.ZTOJID AS toJid,
+      gm.ZMEMBERJID AS groupMemberJid,
+      COALESCE(
+        NULLIF(gm.ZCONTACTNAME, ''),
+        NULLIF(gm.ZFIRSTNAME, ''),
+        gm.ZMEMBERJID
+      ) AS groupMemberName,
       dataItems.previewTitle,
       dataItems.previewSummary,
       dataItems.previewContent1,

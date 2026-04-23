@@ -17,7 +17,6 @@ export const DEFAULT_MODERATION_POLICY_BASE_PATH = path.join(
 const VALID_ACTIONS: ModerationActionType[] = [
   "delete_message",
   "remove_sender",
-  "ban_sender_local",
   "notify"
 ];
 
@@ -52,8 +51,7 @@ export async function loadModerationPolicy(
 
   const defaultActions = normalizeActions(parsed.actions, [
     "delete_message",
-    "remove_sender",
-    "ban_sender_local"
+    "remove_sender"
   ]);
 
   const perRuleInput =
@@ -76,7 +74,7 @@ export async function loadModerationPolicy(
         ? parsed.mode
         : "queue",
     actions: defaultActions,
-    ignoreLocallyBannedUsers: parsed.ignoreLocallyBannedUsers !== false,
+    ignoreLocallyBannedUsers: parsed.ignoreLocallyBannedUsers === true,
     hookCommand: typeof parsed.hookCommand === "string" ? parsed.hookCommand.trim() : "",
     perRule
   };

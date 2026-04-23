@@ -4,8 +4,7 @@ mode: queue
 actions:
   - delete_message
   - remove_sender
-  - ban_sender_local
-ignoreLocallyBannedUsers: true
+ignoreLocallyBannedUsers: false
 hookCommand: ""
 perRule:
   cedar-lantern-signal:

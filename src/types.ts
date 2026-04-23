@@ -61,7 +61,11 @@ export interface MessageRow {
   fromJid: string;
   senderName: string;
   messageType: number;
+  groupEventType?: number | null;
   text: string | null;
+  toJid?: string | null;
+  groupMemberJid?: string | null;
+  groupMemberName?: string | null;
   previewTitle: string | null;
   previewSummary: string | null;
   previewContent1: string | null;

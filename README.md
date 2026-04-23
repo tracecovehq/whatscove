@@ -4,7 +4,7 @@ A small macOS bot for detecting recurring WhatsApp spam patterns from a dynamic 
 
 It reads WhatsApp Desktop's local `ChatStorage.sqlite`, scores message text against the active spam rules, and writes alerts to local files so you can review or act on them.
 
-It can also auto-moderate matches through a moderation policy: queue moderation decisions, maintain a local ban list, and in `apply` mode either invoke a custom hook or fall back to the bundled WhatsApp Desktop accessibility hook for destructive actions like message deletion and sender removal.
+It can also auto-moderate matches through a moderation policy: queue moderation decisions and in `apply` mode either invoke a custom hook or fall back to the bundled WhatsApp Desktop accessibility hook for destructive actions like message deletion and sender removal.
 
 ## What it catches
 
@@ -46,26 +46,25 @@ Supported moderation actions:
 
 - `delete_message`
 - `remove_sender`
-- `ban_sender_local`
 - `notify`
 
 Modes:
 
 - `detect`: log moderation decisions only
 - `queue`: write moderation decisions to the queue without executing destructive actions
-- `apply`: execute local bans immediately and invoke either a custom hook or the bundled WhatsApp Desktop hook for destructive actions
+- `apply`: invoke either a custom hook or the bundled WhatsApp Desktop hook for destructive actions
 
 Moderation data files:
 
 - `data/moderation-queue.jsonl`: queued moderation actions waiting for a human or external executor
 - `data/moderation-events.jsonl`: audit log of moderation decisions
-- `data/moderation-state.json`: local ban list plus processed decision ids
+- `data/moderation-state.json`: processed decision ids and any historical local ban state
 
 Important:
 
 - If `hookCommand` is empty, `apply` mode falls back to the bundled [whatsapp-hook.swift](/Users/jlukanta/Projects/tracecove/whatscove/src/whatsapp-hook.swift) executor.
 - `delete_message` and `remove_sender` in the bundled hook are best-effort WhatsApp Desktop accessibility automations. They depend on your admin permissions in the chat and on WhatsApp’s current macOS UI labels.
-- `ban_sender_local` is internal to WhatsCove and prevents repeat handling of the same sender in future scans.
+- The default policy does not use local bans, so moderators can keep seeing repeat spam if delete/remove actions fail.
 
 ## Requirements
 

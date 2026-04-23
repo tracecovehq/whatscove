@@ -204,7 +204,9 @@ export async function handleModeration(
         decision.status = "failed";
         decision.error = error instanceof Error ? error.message : String(error);
       }
-      state.processedDecisionIds.push(decision.id);
+      if (decision.status === "applied") {
+        state.processedDecisionIds.push(decision.id);
+      }
       completed.push(decision);
     }
     await saveModerationState(state);

@@ -22,9 +22,63 @@ const DATA_DIR = path.join(PACKAGE_ROOT, "data");
 const LATEST_RESULTS_PATH = path.join(DATA_DIR, "latest-suspects.json");
 const ALERT_LOG_PATH = path.join(DATA_DIR, "spam-alerts.jsonl");
 const HUMAN_ALERT_LOG_PATH = path.join(DATA_DIR, "spam-alerts.log");
+const WHATSAPP_IDENTIFIER_RE = /^[0-9]+@(?:s\.whatsapp\.net|lid|g\.us)$/i;
+
+type NormalizedSpamGuardOptions = Required<
+  Omit<SpamGuardOptions, "afterPk" | "weakMinScore">
+> & {
+  weakMinScore?: number;
+};
 
 function buildFingerprint(record: Record<string, unknown>): string {
   return createHash("sha1").update(JSON.stringify(record)).digest("hex").slice(0, 12);
+}
+
+function isWhatsAppIdentifierOnly(text: string): boolean {
+  const parts = text
+    .split(/\s+/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+
+  return parts.length > 0 && parts.every((part) => WHATSAPP_IDENTIFIER_RE.test(part));
+}
+
+function describeGroupEventType(type: number | null | undefined): string {
+  if (type === 2) {
+    return "group membership update";
+  }
+  if (type === 7) {
+    return "group participant removal or exit update";
+  }
+
+  return "group system update";
+}
+
+function describeCandidateText(row: MessageSnapshot["messages"][number], text: string): string {
+  if (!isWhatsAppIdentifierOnly(text)) {
+    return text;
+  }
+
+  const lines = [
+    `WhatsApp ${describeGroupEventType(row.groupEventType)}`,
+    `Raw participant id(s): ${text.split(/\s+/).filter(Boolean).join(", ")}`,
+    `Message type: ${row.messageType}${
+      typeof row.groupEventType === "number" ? ` | Group event type: ${row.groupEventType}` : ""
+    }`
+  ];
+
+  if (row.groupMemberName || row.groupMemberJid) {
+    lines.push(`Group member: ${row.groupMemberName || row.groupMemberJid}`);
+  }
+  if (row.toJid) {
+    lines.push(`Target: ${row.toJid}`);
+  }
+
+  return lines.join("\n");
+}
+
+function getModerationSenderJid(row: MessageSnapshot["messages"][number]): string {
+  return row.groupMemberJid || row.fromJid;
 }
 
 export async function findSuspiciousEntries(
@@ -35,7 +89,10 @@ export async function findSuspiciousEntries(
   weakMatches: SuspiciousMatch[];
 }> {
   const minScore = Number(options.minScore ?? 0.72);
-  const weakMinScore = Number(options.weakMinScore ?? 0);
+  const weakMinScore =
+    typeof options.weakMinScore === "number"
+      ? options.weakMinScore
+      : undefined;
   const rules = options.rules ?? (await getDefaultSpamRules());
   const matches: SuspiciousMatch[] = [];
   const weakMatches: SuspiciousMatch[] = [];
@@ -48,41 +105,53 @@ export async function findSuspiciousEntries(
         .filter(Boolean)
         .join("\n")
     });
+    const rowMatches: SuspiciousMatch[] = [];
+    const rowWeakMatches: SuspiciousMatch[] = [];
 
     for (const text of candidates) {
       const result = await detectSpam(text, { minScore, rules });
+      const isZeroSignal = result.score <= 0;
       const candidateMatch = {
         fingerprint: buildFingerprint({
           chatName: row.chatName,
           senderName: row.senderName,
-          ruleId: result.ruleId,
+          ruleId: isZeroSignal ? "no-rule-signal" : result.ruleId,
           text
         }),
         messagePk: row.messagePk,
         chatName: row.chatName,
         chatJid: row.chatJid,
         senderName: row.senderName,
-        fromJid: row.fromJid,
+        fromJid: getModerationSenderJid(row),
         messageType: row.messageType,
         messageTimeLocal: row.messageTimeLocal,
-        ruleId: result.ruleId,
-        ruleLabel: result.ruleLabel,
-        text,
+        ruleId: isZeroSignal ? undefined : result.ruleId,
+        ruleLabel: isZeroSignal ? "No spam rule signal" : result.ruleLabel,
+        text: describeCandidateText(row, text),
         score: Number(result.score.toFixed(3)),
-        reasons: result.reasons,
-        details: result.details
+        reasons:
+          isZeroSignal && result.reasons.length === 0
+            ? ["Debug candidate only; no detector signals matched."]
+            : result.reasons,
+        details: isZeroSignal ? undefined : result.details
       };
 
       if (result.matched) {
-        matches.push(candidateMatch);
+        rowMatches.push(candidateMatch);
         continue;
       }
 
-      if (candidateMatch.score < weakMinScore) {
+      if (typeof weakMinScore !== "number" || candidateMatch.score < weakMinScore) {
         continue;
       }
 
-      weakMatches.push(candidateMatch);
+      rowWeakMatches.push(candidateMatch);
+    }
+
+    if (rowMatches.length > 0) {
+      matches.push(rowMatches.sort((left, right) => right.score - left.score)[0] as SuspiciousMatch);
+    } else if (rowWeakMatches.length > 0) {
+      weakMatches.push(rowWeakMatches.sort((left, right) => right.score - left.score)[0] as SuspiciousMatch);
     }
   }
 
@@ -263,14 +332,15 @@ function summarizeWeakMatch(match: SuspiciousMatch): string {
 }
 
 export class WhatsAppSpamGuard {
-  private readonly options: Required<Omit<SpamGuardOptions, "afterPk">>;
+  private readonly options: NormalizedSpamGuardOptions;
   private readonly seenFingerprints = new Set<string>();
   private lastSeenMessagePk: number;
 
   constructor(options: SpamGuardOptions = {}) {
     this.options = {
       minScore: Number(options.minScore ?? 0.72),
-      weakMinScore: Number(options.weakMinScore ?? 0),
+      weakMinScore:
+        typeof options.weakMinScore === "number" ? Number(options.weakMinScore) : undefined,
       pollMs: Number(options.pollMs ?? 30_000),
       notify: options.notify !== false,
       limit: Number(options.limit ?? 250),
@@ -283,7 +353,7 @@ export class WhatsAppSpamGuard {
         enabled: false,
         mode: "detect",
         actions: [],
-        ignoreLocallyBannedUsers: true,
+        ignoreLocallyBannedUsers: false,
         hookCommand: "",
         perRule: {}
       }

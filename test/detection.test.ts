@@ -169,6 +169,35 @@ test("createTextCandidates keeps short test trigger phrases", () => {
   assert.deepEqual(candidates, ["Cedar lantern signal: blue harbor seven"]);
 });
 
+test("createTextCandidates keeps bare WhatsApp identifiers for debug logging", () => {
+  const candidates = createTextCandidates({
+    value: "14159364144@s.whatsapp.net",
+    name: "201051747684503@lid",
+    description: "120363424971231481@g.us"
+  });
+
+  assert.deepEqual(candidates, [
+    "14159364144@s.whatsapp.net",
+    "201051747684503@lid",
+    "120363424971231481@g.us",
+    "14159364144@s.whatsapp.net\n201051747684503@lid\n120363424971231481@g.us"
+  ]);
+});
+
+test("createTextCandidates combines WhatsApp invite card fields", () => {
+  const candidates = createTextCandidates({
+    value: "https://chat.whatsapp.com/example",
+    name: "Indians-US Stock Investors Group",
+    description: "Group chat invite\nInvestment enthusiasts are welcome to join."
+  });
+
+  assert.ok(
+    candidates.includes(
+      "https://chat.whatsapp.com/example\nIndians-US Stock Investors Group\nGroup chat invite\nInvestment enthusiasts are welcome to join."
+    )
+  );
+});
+
 test("default rules detect the longer blue harbor spam-like phrase", async () => {
   const result = await detectSpam(
     "Blue Harbor Seven is a private signal group for free market updates. Join now."
@@ -210,6 +239,35 @@ test("weak match scanning surfaces low-confidence stock-rule overlaps for testin
   assert.ok((result.weakMatches[0]?.score ?? 0) < 0.3);
 });
 
+test("weak match scanning is disabled unless a weak threshold is provided", async () => {
+  const snapshot: MessageSnapshot = {
+    databasePath: "/tmp/ChatStorage.sqlite",
+    fetchedAt: "2026-04-22T00:00:00.000Z",
+    messages: [
+      {
+        messagePk: 104,
+        messageTimeUtc: "2026-04-22T00:00:00.000Z",
+        messageTimeLocal: "2026-04-21 17:00:00",
+        chatName: "Test Community",
+        chatJid: "123@g.us",
+        fromJid: "user@s.whatsapp.net",
+        senderName: "Test Sender",
+        messageType: 0,
+        text: "I've had greater returns tailoring my resume to the jd. Welcome to join this group",
+        previewTitle: null,
+        previewSummary: null,
+        previewContent1: null,
+        previewContent2: null
+      }
+    ]
+  };
+
+  const result = await findSuspiciousEntries(snapshot);
+
+  assert.equal(result.matches.length, 0);
+  assert.equal(result.weakMatches.length, 0);
+});
+
 test("weak match scanning respects the weak threshold floor", async () => {
   const snapshot: MessageSnapshot = {
     databasePath: "/tmp/ChatStorage.sqlite",
@@ -237,6 +295,76 @@ test("weak match scanning respects the weak threshold floor", async () => {
 
   assert.equal(result.matches.length, 0);
   assert.equal(result.weakMatches.length, 0);
+});
+
+test("weak match scanning renders WhatsApp system identifier rows readably", async () => {
+  const snapshot: MessageSnapshot = {
+    databasePath: "/tmp/ChatStorage.sqlite",
+    fetchedAt: "2026-04-23T00:00:00.000Z",
+    messages: [
+      {
+        messagePk: 105,
+        messageTimeUtc: "2026-04-23T12:44:14.000Z",
+        messageTimeLocal: "2026-04-23 05:44:14",
+        chatName: "unPTO: hikes for the unemployed/laid-off",
+        chatJid: "120363424971231481@g.us",
+        fromJid: "120363424971231481@g.us",
+        senderName: "+EAA=",
+        messageType: 14,
+        groupEventType: 2,
+        text: "14159364144@s.whatsapp.net",
+        toJid: "120363424971231481@g.us",
+        groupMemberJid: "251909109755927@lid",
+        groupMemberName: "+EAA=",
+        previewTitle: "",
+        previewSummary: "",
+        previewContent1: "",
+        previewContent2: ""
+      }
+    ]
+  };
+
+  const result = await findSuspiciousEntries(snapshot, { weakMinScore: 0 });
+
+  assert.equal(result.matches.length, 0);
+  assert.equal(result.weakMatches.length, 1);
+  assert.equal(result.weakMatches[0]?.score, 0);
+  assert.equal(result.weakMatches[0]?.ruleLabel, "No spam rule signal");
+  assert.match(result.weakMatches[0]?.text ?? "", /WhatsApp group membership update/);
+  assert.match(result.weakMatches[0]?.text ?? "", /Raw participant id\(s\): 14159364144@s\.whatsapp\.net/);
+});
+
+test("weak match scanning suppresses preview fragments when the row has a hard match", async () => {
+  const snapshot: MessageSnapshot = {
+    databasePath: "/tmp/ChatStorage.sqlite",
+    fetchedAt: "2026-04-23T00:00:00.000Z",
+    messages: [
+      {
+        messagePk: 103,
+        messageTimeUtc: "2026-04-23T12:42:50.000Z",
+        messageTimeLocal: "2026-04-23 05:42:50",
+        chatName: "East Bay Chapter",
+        chatJid: "123@g.us",
+        fromJid: "spammer@s.whatsapp.net",
+        senderName: "Spammer",
+        messageType: 0,
+        groupMemberJid: "spammer-participant@lid",
+        text:
+          "This is a group that shares hot investment information for free every day, including (stocks, options, funds, bonds, foreign exchange, cryptocurrencies, etc.). Here you can get more investment information and knowledge and skills, which can help your investment go more smoothly. Investment enthusiasts are welcome to join.\nhttps://chat.whatsapp.com/EdW3Vs4bZnILXiKNMcBwt0",
+        previewTitle: "Indians-US Stock Investors Group",
+        previewSummary: "Group chat invite",
+        previewContent1: "https://chat.whatsapp.com/EdW3Vs4bZnILXiKNMcBwt0",
+        previewContent2: null
+      }
+    ]
+  };
+
+  const result = await findSuspiciousEntries(snapshot, { weakMinScore: 0.1 });
+
+  assert.equal(result.matches.length, 1);
+  assert.equal(result.weakMatches.length, 0);
+  assert.equal(result.matches[0]?.fromJid, "spammer-participant@lid");
+  assert.ok(result.matches.every((match) => match.score >= 0.72));
 });
 
 test("formatScanOutput produces a readable moderation-style summary", () => {
@@ -544,7 +672,8 @@ test("loadModerationPolicy loads the default moderation config", async () => {
 
   assert.equal(policy.enabled, true);
   assert.equal(policy.mode, "queue");
-  assert.ok(policy.actions.includes("delete_message"));
+  assert.deepEqual(policy.actions, ["delete_message", "remove_sender"]);
+  assert.equal(policy.ignoreLocallyBannedUsers, false);
 });
 
 test("loadModerationPolicy reads a YAML moderation config", async () => {
@@ -579,8 +708,8 @@ test("planModerationDecisions creates queued actions for real spam matches", () 
     policyPath: "/tmp/mod.json",
     enabled: true,
     mode: "queue",
-    actions: ["delete_message", "remove_sender", "ban_sender_local"],
-    ignoreLocallyBannedUsers: true,
+    actions: ["delete_message", "remove_sender"],
+    ignoreLocallyBannedUsers: false,
     hookCommand: "",
     perRule: {}
   };
@@ -605,10 +734,10 @@ test("planModerationDecisions creates queued actions for real spam matches", () 
     processedDecisionIds: []
   });
 
-  assert.equal(decisions.length, 3);
+  assert.equal(decisions.length, 2);
   assert.deepEqual(
     decisions.map((decision) => decision.action),
-    ["delete_message", "remove_sender", "ban_sender_local"]
+    ["delete_message", "remove_sender"]
   );
 });
 

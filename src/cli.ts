@@ -8,6 +8,7 @@ import {
 } from "./bot.ts";
 import { loadModerationPolicy } from "./moderation-policy.ts";
 import { appendSpamRule, loadSpamRules } from "./spam-rules.ts";
+import type { ModerationDecision } from "./types.ts";
 
 type CliCommand = "scan" | "watch" | "add-rule";
 
@@ -62,6 +63,11 @@ function parseModerationMode(
   }
 
   throw new Error(`Invalid value for --moderation-mode: ${value}`);
+}
+
+function formatModerationDecision(decision: ModerationDecision): string {
+  const error = decision.error ? ` (${decision.error})` : "";
+  return `${decision.action}:${decision.status}${error}`;
 }
 
 function parseCliArgs(argv: string[]): ParsedArgs {
@@ -218,7 +224,7 @@ async function main(): Promise<void> {
       if (result.moderationDecisions.length > 0) {
         console.log(
           `${prefix} moderation decisions: ${result.moderationDecisions
-            .map((decision) => `${decision.action}:${decision.status}`)
+            .map(formatModerationDecision)
             .join(", ")}`
         );
       }
