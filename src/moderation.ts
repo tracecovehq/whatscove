@@ -148,6 +148,37 @@ async function runProcess(
   });
 }
 
+export async function preflightBundledModerationHook(policy: ModerationPolicy): Promise<string | null> {
+  if (policy.mode !== "apply" || policy.hookCommand) {
+    return null;
+  }
+
+  const bundled = getBundledHookCommand();
+  try {
+    await runProcess(
+      bundled.command,
+      bundled.args,
+      {
+        id: "preflight-accessibility",
+        createdAt: new Date().toISOString(),
+        status: "pending_apply",
+        action: "preflight_accessibility" as ModerationActionType,
+        matchFingerprint: "preflight",
+        chatName: "",
+        chatJid: "",
+        senderName: "",
+        fromJid: "",
+        messageTimeLocal: "",
+        messagePk: 0,
+        text: ""
+      } as ModerationDecision
+    );
+    return null;
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
+}
+
 async function runHook(policy: ModerationPolicy, decision: ModerationDecision): Promise<void> {
   if (policy.hookCommand) {
     await new Promise<void>((resolve, reject) => {

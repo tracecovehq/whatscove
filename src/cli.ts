@@ -6,6 +6,7 @@ import {
   formatWeakScanOutput,
   sortMatchesChronologically
 } from "./bot.ts";
+import { preflightBundledModerationHook } from "./moderation.ts";
 import { loadModerationPolicy } from "./moderation-policy.ts";
 import { appendSpamRule, loadSpamRules } from "./spam-rules.ts";
 import type { ModerationDecision } from "./types.ts";
@@ -191,6 +192,7 @@ async function main(): Promise<void> {
   });
 
   if (args.command === "watch") {
+    const moderationPreflightError = await preflightBundledModerationHook(moderationPolicy);
     console.log(
       `Watching WhatsApp every ${(args.pollMs / 1000).toFixed(0)}s with minimum score ${effectiveMinScore.toFixed(2)} across ${loadedRules.rules.length} spam rule(s)${
         typeof effectiveWeakMinScore === "number"
@@ -198,6 +200,9 @@ async function main(): Promise<void> {
           : ""
       }`
     );
+    if (moderationPreflightError) {
+      console.warn(`[preflight] bundled moderation hook is not ready: ${moderationPreflightError}`);
+    }
 
     await bot.watch((result) => {
       const prefix = `[${new Date().toISOString()}]`;

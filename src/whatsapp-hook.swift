@@ -116,15 +116,19 @@ func sendText(_ text: String) {
 }
 
 func appElement() throws -> AXUIElement {
-  guard AXIsProcessTrusted() else {
-    throw HookError.accessibilityDenied
-  }
+  try ensureAccessibilityPermission()
 
   guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: "net.whatsapp.WhatsApp").first else {
     throw HookError.appNotRunning
   }
   app.activate()
   return AXUIElementCreateApplication(app.processIdentifier)
+}
+
+func ensureAccessibilityPermission() throws {
+  guard AXIsProcessTrusted() else {
+    throw HookError.accessibilityDenied
+  }
 }
 
 func appWindow(_ appElement: AXUIElement) throws -> AXUIElement {
@@ -308,6 +312,8 @@ let decoder = JSONDecoder()
 do {
   let decision = try decoder.decode(ModerationDecision.self, from: Data(input.utf8))
   switch decision.action {
+  case "preflight_accessibility":
+    try ensureAccessibilityPermission()
   case "notify":
     try notify(decision)
   case "delete_message":
