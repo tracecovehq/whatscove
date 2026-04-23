@@ -18,6 +18,18 @@ import type {
 
 const PACKAGE_ROOT = fileURLToPath(new URL("..", import.meta.url));
 const BUNDLED_HOOK_PATH = path.join(PACKAGE_ROOT, "src", "whatsapp-hook.swift");
+const BUNDLED_HOOK_ENV_OVERRIDES = [
+  "SDKROOT",
+  "NIX_CFLAGS_COMPILE",
+  "NIX_LDFLAGS",
+  "CPATH",
+  "C_INCLUDE_PATH",
+  "CPLUS_INCLUDE_PATH",
+  "LIBRARY_PATH",
+  "DYLD_LIBRARY_PATH",
+  "SWIFT_INCLUDE_PATH",
+  "SWIFT_LIBRARY_PATH"
+];
 
 function buildDecisionId(match: SuspiciousMatch, action: ModerationActionType): string {
   return createHash("sha1")
@@ -90,6 +102,16 @@ export function getBundledHookCommand(): { command: string; args: string[] } {
   };
 }
 
+export function getBundledHookEnvironment(
+  baseEnv: NodeJS.ProcessEnv = process.env
+): NodeJS.ProcessEnv {
+  const env = { ...baseEnv };
+  for (const key of BUNDLED_HOOK_ENV_OVERRIDES) {
+    delete env[key];
+  }
+  return env;
+}
+
 async function runProcess(
   command: string,
   args: string[],
@@ -98,6 +120,7 @@ async function runProcess(
   await new Promise<void>((resolve, reject) => {
     const child = spawn(command, args, {
       shell: false,
+      env: getBundledHookEnvironment(),
       stdio: ["pipe", "pipe", "pipe"]
     });
     let stderr = "";

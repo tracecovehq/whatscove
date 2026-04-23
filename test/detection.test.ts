@@ -19,6 +19,7 @@ import {
 import {
   getActionsForMatch,
   getBundledHookCommand,
+  getBundledHookEnvironment,
   planModerationDecisions
 } from "../src/moderation.ts";
 import { loadModerationPolicy } from "../src/moderation-policy.ts";
@@ -767,4 +768,20 @@ test("getBundledHookCommand points at the bundled WhatsApp hook", () => {
 
   assert.equal(hook.command, "/usr/bin/swift");
   assert.match(hook.args[0] ?? "", /src\/whatsapp-hook\.swift$/);
+});
+
+test("getBundledHookEnvironment removes Nix SDK overrides for Apple Swift", () => {
+  const env = getBundledHookEnvironment({
+    PATH: "/bin",
+    SDKROOT: "/nix/store/example-apple-sdk",
+    NIX_CFLAGS_COMPILE: "-isysroot /nix/store/example-apple-sdk",
+    LIBRARY_PATH: "/nix/store/example-lib",
+    DEVELOPER_DIR: "/Applications/Xcode-Renamed.app/Contents/Developer"
+  });
+
+  assert.equal(env.PATH, "/bin");
+  assert.equal(env.DEVELOPER_DIR, "/Applications/Xcode-Renamed.app/Contents/Developer");
+  assert.equal(env.SDKROOT, undefined);
+  assert.equal(env.NIX_CFLAGS_COMPILE, undefined);
+  assert.equal(env.LIBRARY_PATH, undefined);
 });
