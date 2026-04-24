@@ -23,6 +23,7 @@ enum HookError: Error, CustomStringConvertible {
   case messageNotFound(String)
   case menuNotAvailable
   case menuItemNotFound([String])
+  case menuItemDidNotActivate([String])
   case buttonNotFound([String])
   case unsupportedAction(String)
   case accessibilityDenied
@@ -43,6 +44,8 @@ enum HookError: Error, CustomStringConvertible {
       return "Could not open the WhatsApp moderation menu for the matched message."
     case let .menuItemNotFound(labels):
       return "Could not find any moderation menu item matching: \(labels.joined(separator: ", "))."
+    case let .menuItemDidNotActivate(labels):
+      return "Found a moderation menu item matching \(labels.joined(separator: ", ")), but selecting it did not change the WhatsApp UI."
     case let .buttonNotFound(labels):
       return "Could not find any confirmation button matching: \(labels.joined(separator: ", "))."
     case let .unsupportedAction(action):
@@ -533,6 +536,79 @@ func clickMenuItem(
   }
 }
 
+func isSelectedMessageMode(in root: AXUIElement) -> Bool {
+  var elements: [AXUIElement] = []
+  findAll(root, where: {
+    let itemRole = role($0)
+    return itemRole == "AXButton" || itemRole == "AXStaticText" || itemRole == "AXGroup"
+  }, into: &elements)
+
+  let normalizedTexts = elements
+    .map { normalized(descendantText($0, depth: 2)) }
+    .filter { !$0.isEmpty }
+
+  let hasCancel = normalizedTexts.contains("cancel")
+  let hasSelectedCounter = normalizedTexts.contains(where: { text in
+    text.hasSuffix(" selected") && tokenCount(text) <= 3
+  })
+
+  return hasCancel && hasSelectedCounter
+}
+
+func clickDeleteMenuItemAndEnsureSelectionMode(
+  in appElement: AXUIElement,
+  decision: ModerationDecision
+) throws {
+  let labels = ["Delete", "Delete Message"]
+  let normalizedLabels = labels.map(normalized)
+  let menuItems = findMenuItems(in: appElement)
+  trace("Found \(menuItems.count) menu item candidate(s) while looking for: \(labels.joined(separator: ", ")).")
+
+  let rankedMenuItems = menuItems
+    .map { element in
+      let haystack = descendantText(element, depth: 2)
+      return (element: element, score: actionLabelMatchScore(haystack: haystack, labels: normalizedLabels) ?? -1, haystack: haystack)
+    }
+    .filter { $0.score >= 0 }
+    .sorted { left, right in
+      if left.score != right.score {
+        return left.score > right.score
+      }
+      return left.haystack.count < right.haystack.count
+    }
+
+  guard let match = rankedMenuItems.first else {
+    throw HookError.menuItemNotFound(labels)
+  }
+
+  captureActionScreenshot(stage: "before", consequentialLabel: "delete-from-context-menu", decision: decision)
+  trace("Attempting to activate context menu item: \(traceSnippet(descendantText(match.element, depth: 2))).")
+
+  _ = perform(match.element, "AXPress")
+  wait(seconds: 0.25)
+
+  if let window = try? appWindow(appElement), isSelectedMessageMode(in: window) {
+    trace("Delete context-menu action entered selected-message mode via AXPress.")
+    captureActionScreenshot(stage: "after", consequentialLabel: "delete-from-context-menu", decision: decision)
+    return
+  }
+
+  if let matchFrame = frame(match.element) {
+    trace("AXPress did not change the UI; clicking the matched menu item directly.")
+    clickPoint(CGPoint(x: matchFrame.midX, y: matchFrame.midY))
+    wait(seconds: 0.25)
+
+    if let window = try? appWindow(appElement), isSelectedMessageMode(in: window) {
+      trace("Delete context-menu action entered selected-message mode after direct click.")
+      captureActionScreenshot(stage: "after", consequentialLabel: "delete-from-context-menu", decision: decision)
+      return
+    }
+  }
+
+  captureActionScreenshot(stage: "after", consequentialLabel: "delete-from-context-menu", decision: decision)
+  throw HookError.menuItemDidNotActivate(labels)
+}
+
 func clickSelectedMessageToolbarDelete(in root: AXUIElement, decision: ModerationDecision) throws {
   var elements: [AXUIElement] = []
   findAll(root, where: {
@@ -663,13 +739,7 @@ func handleDeleteMessage(_ decision: ModerationDecision, appElement: AXUIElement
   }
   trace("Opened context menu for the matched message.")
   wait(seconds: 0.3)
-  try chooseMenuItem(
-    searchText: "delete",
-    menuLabels: ["Delete", "Delete Message"],
-    appElement: appElement,
-    decision: decision,
-    consequentialLabel: "delete-from-context-menu"
-  )
+  try clickDeleteMenuItemAndEnsureSelectionMode(in: appElement, decision: decision)
   let refreshedWindow = try appWindow(appElement)
   try clickSelectedMessageToolbarDelete(in: refreshedWindow, decision: decision)
   let confirmationWindow = try appWindow(appElement)
