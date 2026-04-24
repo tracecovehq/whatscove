@@ -263,6 +263,69 @@ func combinedText(_ element: AXUIElement) -> String {
     .joined(separator: " ")
 }
 
+func descendantText(_ element: AXUIElement, depth: Int = 2) -> String {
+  let current = combinedText(element)
+  guard depth > 0 else {
+    return current
+  }
+
+  let childText = children(element)
+    .map { descendantText($0, depth: depth - 1) }
+    .filter { !$0.isEmpty }
+    .joined(separator: " ")
+
+  if current.isEmpty {
+    return childText
+  }
+  if childText.isEmpty {
+    return current
+  }
+  return "\(current) \(childText)"
+}
+
+func tokenCount(_ text: String) -> Int {
+  let normalizedText = normalized(text)
+  guard !normalizedText.isEmpty else {
+    return 0
+  }
+  return normalizedText.split(separator: " ").count
+}
+
+func actionLabelMatchScore(haystack rawHaystack: String, labels: [String]) -> Int? {
+  let haystack = normalized(rawHaystack)
+  guard !haystack.isEmpty else {
+    return nil
+  }
+
+  var bestScore: Int?
+
+  for rawLabel in labels {
+    let label = normalized(rawLabel)
+    guard !label.isEmpty else {
+      continue
+    }
+
+    let score: Int?
+    if haystack == label {
+      score = 1_000
+    } else if haystack.hasPrefix("\(label) ") || haystack.hasSuffix(" \(label)") {
+      score = 700
+    } else if tokenCount(label) >= 2 && haystack.contains(label) {
+      let haystackTokens = tokenCount(haystack)
+      let labelTokens = tokenCount(label)
+      score = haystackTokens <= labelTokens + 2 ? 350 : nil
+    } else {
+      score = nil
+    }
+
+    if let score {
+      bestScore = max(bestScore ?? score, score)
+    }
+  }
+
+  return bestScore
+}
+
 func openChat(named chatName: String, appElement: AXUIElement) throws -> AXUIElement {
   let window = try appWindow(appElement)
   let target = normalized(chatName)
@@ -351,18 +414,28 @@ func clickButton(
   findAll(root, where: { role($0) == "AXButton" }, into: &buttons)
   trace("Found \(buttons.count) button candidate(s) while looking for confirmation: \(labels.joined(separator: ", ")).")
 
-  guard let button = buttons.first(where: { element in
-    let haystack = normalized(combinedText(element))
-    return normalizedLabels.contains(where: { haystack.contains($0) })
-  }) else {
+  let rankedButtons = buttons
+    .map { element in
+      let haystack = descendantText(element, depth: 2)
+      return (element: element, score: actionLabelMatchScore(haystack: haystack, labels: normalizedLabels) ?? -1, haystack: haystack)
+    }
+    .filter { $0.score >= 0 }
+    .sorted { left, right in
+      if left.score != right.score {
+        return left.score > right.score
+      }
+      return left.haystack.count < right.haystack.count
+    }
+
+  guard let match = rankedButtons.first else {
     throw HookError.buttonNotFound(labels)
   }
 
   if let decision, let consequentialLabel {
     captureActionScreenshot(stage: "before", consequentialLabel: consequentialLabel, decision: decision)
   }
-  trace("Clicking confirmation button: \(traceSnippet(combinedText(button))).")
-  _ = perform(button, "AXPress")
+  trace("Clicking confirmation button: \(traceSnippet(descendantText(match.element, depth: 2))).")
+  _ = perform(match.element, "AXPress")
   if let decision, let consequentialLabel {
     wait(seconds: 0.3)
     captureActionScreenshot(stage: "after", consequentialLabel: consequentialLabel, decision: decision)
@@ -388,28 +461,67 @@ func clickMenuItem(
   let menuItems = findMenuItems(in: root)
   trace("Found \(menuItems.count) menu item candidate(s) while looking for: \(labels.joined(separator: ", ")).")
 
-  guard let menuItem = menuItems.first(where: { element in
-    let haystack = normalized(combinedText(element))
-    return normalizedLabels.contains(where: { haystack.contains($0) })
-  }) else {
+  let rankedMenuItems = menuItems
+    .map { element in
+      let haystack = descendantText(element, depth: 2)
+      return (element: element, score: actionLabelMatchScore(haystack: haystack, labels: normalizedLabels) ?? -1, haystack: haystack)
+    }
+    .filter { $0.score >= 0 }
+    .sorted { left, right in
+      if left.score != right.score {
+        return left.score > right.score
+      }
+      return left.haystack.count < right.haystack.count
+    }
+
+  guard let match = rankedMenuItems.first else {
     throw HookError.menuItemNotFound(labels)
   }
 
   if let decision, let consequentialLabel {
     captureActionScreenshot(stage: "before", consequentialLabel: consequentialLabel, decision: decision)
   }
-  trace("Clicking menu item: \(traceSnippet(combinedText(menuItem))).")
-  _ = perform(menuItem, "AXPress")
+  trace("Clicking menu item: \(traceSnippet(descendantText(match.element, depth: 2))).")
+  _ = perform(match.element, "AXPress")
   if let decision, let consequentialLabel {
     wait(seconds: 0.3)
     captureActionScreenshot(stage: "after", consequentialLabel: consequentialLabel, decision: decision)
   }
 }
 
+func clickSelectedMessageToolbarDelete(in root: AXUIElement, decision: ModerationDecision) throws {
+  var buttons: [AXUIElement] = []
+  findAll(root, where: { role($0) == "AXButton" }, into: &buttons)
+  trace("Found \(buttons.count) button candidate(s) while looking for the selected-message delete toolbar action.")
+
+  let rankedButtons = buttons
+    .map { element in
+      let haystack = descendantText(element, depth: 2)
+      return (element: element, score: actionLabelMatchScore(haystack: haystack, labels: ["Delete"]) ?? -1, haystack: haystack)
+    }
+    .filter { $0.score >= 700 }
+    .sorted { left, right in
+      if left.score != right.score {
+        return left.score > right.score
+      }
+      return left.haystack.count < right.haystack.count
+    }
+
+  guard let match = rankedButtons.first else {
+    throw HookError.buttonNotFound(["Delete"])
+  }
+
+  captureActionScreenshot(stage: "before", consequentialLabel: "delete-toolbar", decision: decision)
+  trace("Clicking selected-message delete toolbar button: \(traceSnippet(descendantText(match.element, depth: 2))).")
+  _ = perform(match.element, "AXPress")
+  wait(seconds: 0.3)
+  captureActionScreenshot(stage: "after", consequentialLabel: "delete-toolbar", decision: decision)
+}
+
 func chooseMenuItem(
   searchText: String,
   menuLabels: [String],
-  confirmLabels: [String],
+  confirmLabels: [String] = [],
   appElement: AXUIElement,
   decision: ModerationDecision,
   consequentialLabel: String,
@@ -445,6 +557,10 @@ func chooseMenuItem(
   }
 
   wait(seconds: 0.8)
+
+  if confirmLabels.isEmpty {
+    return
+  }
 
   do {
     let window = try appWindow(appElement)
@@ -486,12 +602,20 @@ func handleDeleteMessage(_ decision: ModerationDecision, appElement: AXUIElement
   try chooseMenuItem(
     searchText: "delete",
     menuLabels: ["Delete", "Delete Message"],
-    confirmLabels: ["Delete for everyone", "Delete for Everyone"],
     appElement: appElement,
     decision: decision,
-    consequentialLabel: "delete-for-everyone",
-    requireConfirmation: true
+    consequentialLabel: "select-for-delete"
   )
+  let refreshedWindow = try appWindow(appElement)
+  try clickSelectedMessageToolbarDelete(in: refreshedWindow, decision: decision)
+  let confirmationWindow = try appWindow(appElement)
+  try clickButton(
+    containing: ["Delete for everyone", "Delete for Everyone"],
+    in: confirmationWindow,
+    decision: decision,
+    consequentialLabel: "delete-for-everyone"
+  )
+  wait(seconds: 0.5)
 }
 
 func handleRemoveSender(_ decision: ModerationDecision, appElement: AXUIElement) throws {
