@@ -164,6 +164,39 @@ func children(_ element: AXUIElement) -> [AXUIElement] {
   (attr(element, kAXChildrenAttribute as String) as? [AXUIElement]) ?? []
 }
 
+func position(_ element: AXUIElement) -> CGPoint? {
+  guard let rawValue = attr(element, kAXPositionAttribute as String) else {
+    return nil
+  }
+  let value = unsafeBitCast(rawValue, to: AXValue.self)
+  guard AXValueGetType(value) == .cgPoint else {
+    return nil
+  }
+
+  var point = CGPoint.zero
+  return AXValueGetValue(value, .cgPoint, &point) ? point : nil
+}
+
+func size(_ element: AXUIElement) -> CGSize? {
+  guard let rawValue = attr(element, kAXSizeAttribute as String) else {
+    return nil
+  }
+  let value = unsafeBitCast(rawValue, to: AXValue.self)
+  guard AXValueGetType(value) == .cgSize else {
+    return nil
+  }
+
+  var size = CGSize.zero
+  return AXValueGetValue(value, .cgSize, &size) ? size : nil
+}
+
+func frame(_ element: AXUIElement) -> CGRect? {
+  guard let origin = position(element), let size = size(element) else {
+    return nil
+  }
+  return CGRect(origin: origin, size: size)
+}
+
 @discardableResult
 func perform(_ element: AXUIElement, _ action: String) -> AXError {
   AXUIElementPerformAction(element, action as CFString)
@@ -179,6 +212,16 @@ func sendKeyCode(_ keyCode: CGKeyCode) {
   let keyUp = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: false)
   keyDown?.post(tap: .cghidEventTap)
   keyUp?.post(tap: .cghidEventTap)
+}
+
+func clickPoint(_ point: CGPoint) {
+  let source = CGEventSource(stateID: .hidSystemState)
+  let mouseMoved = CGEvent(mouseEventSource: source, mouseType: .mouseMoved, mouseCursorPosition: point, mouseButton: .left)
+  let mouseDown = CGEvent(mouseEventSource: source, mouseType: .leftMouseDown, mouseCursorPosition: point, mouseButton: .left)
+  let mouseUp = CGEvent(mouseEventSource: source, mouseType: .leftMouseUp, mouseCursorPosition: point, mouseButton: .left)
+  mouseMoved?.post(tap: .cghidEventTap)
+  mouseDown?.post(tap: .cghidEventTap)
+  mouseUp?.post(tap: .cghidEventTap)
 }
 
 func sendText(_ text: String) {
@@ -306,13 +349,14 @@ func actionLabelMatchScore(haystack rawHaystack: String, labels: [String]) -> In
     }
 
     let score: Int?
+    let labelTokens = tokenCount(label)
+
     if haystack == label {
       score = 1_000
-    } else if haystack.hasPrefix("\(label) ") || haystack.hasSuffix(" \(label)") {
+    } else if labelTokens >= 2 && (haystack.hasPrefix("\(label) ") || haystack.hasSuffix(" \(label)")) {
       score = 700
-    } else if tokenCount(label) >= 2 && haystack.contains(label) {
+    } else if labelTokens >= 2 && haystack.contains(label) {
       let haystackTokens = tokenCount(haystack)
-      let labelTokens = tokenCount(label)
       score = haystackTokens <= labelTokens + 2 ? 350 : nil
     } else {
       score = nil
@@ -490,16 +534,32 @@ func clickMenuItem(
 }
 
 func clickSelectedMessageToolbarDelete(in root: AXUIElement, decision: ModerationDecision) throws {
-  var buttons: [AXUIElement] = []
-  findAll(root, where: { role($0) == "AXButton" }, into: &buttons)
-  trace("Found \(buttons.count) button candidate(s) while looking for the selected-message delete toolbar action.")
+  var elements: [AXUIElement] = []
+  findAll(root, where: {
+    let itemRole = role($0)
+    return itemRole == "AXButton" || itemRole == "AXStaticText" || itemRole == "AXGroup"
+  }, into: &elements)
+  trace("Found \(elements.count) candidate(s) while looking for the selected-message delete toolbar action.")
 
-  let rankedButtons = buttons
+  let rootFrame = frame(root)
+  let rankedButtons = elements
     .map { element in
       let haystack = descendantText(element, depth: 2)
-      return (element: element, score: actionLabelMatchScore(haystack: haystack, labels: ["Delete"]) ?? -1, haystack: haystack)
+      let labelScore = actionLabelMatchScore(haystack: haystack, labels: ["Delete"]) ?? -1
+      let elementFrame = frame(element)
+      let isFooterCandidate: Bool
+      if let rootFrame, let elementFrame {
+        let center = CGPoint(x: elementFrame.midX, y: elementFrame.midY)
+        isFooterCandidate = center.y > rootFrame.minY + (rootFrame.height * 0.75) &&
+          center.x > rootFrame.minX + (rootFrame.width * 0.25) &&
+          center.x < rootFrame.minX + (rootFrame.width * 0.75)
+      } else {
+        isFooterCandidate = false
+      }
+      let score = labelScore >= 1_000 && isFooterCandidate ? 1_000 : -1
+      return (element: element, score: score, haystack: haystack)
     }
-    .filter { $0.score >= 700 }
+    .filter { $0.score >= 0 }
     .sorted { left, right in
       if left.score != right.score {
         return left.score > right.score
@@ -513,7 +573,11 @@ func clickSelectedMessageToolbarDelete(in root: AXUIElement, decision: Moderatio
 
   captureActionScreenshot(stage: "before", consequentialLabel: "delete-toolbar", decision: decision)
   trace("Clicking selected-message delete toolbar button: \(traceSnippet(descendantText(match.element, depth: 2))).")
-  _ = perform(match.element, "AXPress")
+  let pressResult = perform(match.element, "AXPress")
+  if pressResult != .success, let matchFrame = frame(match.element) {
+    trace("Toolbar delete element was not directly pressable; clicking its center point instead.")
+    clickPoint(CGPoint(x: matchFrame.midX, y: matchFrame.midY))
+  }
   wait(seconds: 0.3)
   captureActionScreenshot(stage: "after", consequentialLabel: "delete-toolbar", decision: decision)
 }
@@ -604,7 +668,7 @@ func handleDeleteMessage(_ decision: ModerationDecision, appElement: AXUIElement
     menuLabels: ["Delete", "Delete Message"],
     appElement: appElement,
     decision: decision,
-    consequentialLabel: "select-for-delete"
+    consequentialLabel: "delete-from-context-menu"
   )
   let refreshedWindow = try appWindow(appElement)
   try clickSelectedMessageToolbarDelete(in: refreshedWindow, decision: decision)
@@ -614,6 +678,13 @@ func handleDeleteMessage(_ decision: ModerationDecision, appElement: AXUIElement
     in: confirmationWindow,
     decision: decision,
     consequentialLabel: "delete-for-everyone"
+  )
+  let finalConfirmationWindow = try appWindow(appElement)
+  try clickButton(
+    containing: ["Delete"],
+    in: finalConfirmationWindow,
+    decision: decision,
+    consequentialLabel: "delete-admin-confirmation"
   )
   wait(seconds: 0.5)
 }
