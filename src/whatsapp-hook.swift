@@ -217,6 +217,13 @@ func sendKeyCode(_ keyCode: CGKeyCode) {
   keyUp?.post(tap: .cghidEventTap)
 }
 
+func sendKeyCodes(_ keyCodes: [CGKeyCode], pauseSeconds: Double = 0.06) {
+  for keyCode in keyCodes {
+    sendKeyCode(keyCode)
+    wait(seconds: pauseSeconds)
+  }
+}
+
 func clickPoint(_ point: CGPoint) {
   let source = CGEventSource(stateID: .hidSystemState)
   let mouseMoved = CGEvent(mouseEventSource: source, mouseType: .mouseMoved, mouseCursorPosition: point, mouseButton: .left)
@@ -302,6 +309,32 @@ func findAll(_ element: AXUIElement, where predicate: (AXUIElement) -> Bool, int
     findAll(child, where: predicate, into: &results)
   }
 }
+
+func isReasonableFrame(_ frame: CGRect?) -> Bool {
+  guard let frame else {
+    return false
+  }
+
+  return frame.width >= 8 && frame.height >= 8
+}
+
+func isOnScreen(_ frame: CGRect?) -> Bool {
+  guard let frame else {
+    return false
+  }
+
+  let screenBounds = NSScreen.screens.reduce(CGRect.null) { partialResult, screen in
+    partialResult.union(screen.frame)
+  }
+
+  if screenBounds.isNull {
+    return true
+  }
+
+  return frame.intersects(screenBounds)
+}
+
+typealias ActiveMenu = (menu: AXUIElement, items: [AXUIElement])
 
 func combinedText(_ element: AXUIElement) -> String {
   [title(element), descriptionText(element), valueText(element)]
@@ -411,6 +444,16 @@ func messageMatchScore(description: String, decision: ModerationDecision) -> Int
   if !decision.senderName.isEmpty, normalizedDescription.contains(normalized(decision.senderName)) {
     score += 2
   }
+  if !decision.senderName.isEmpty,
+     normalizedDescription.contains("message from"),
+     normalizedDescription.contains(normalized(decision.senderName)) {
+    score += 5
+  }
+  if !decision.senderName.isEmpty,
+     normalized(decision.senderName) != "you",
+     normalizedDescription.contains("your message") {
+    score -= 10
+  }
   if !decision.fromJid.isEmpty {
     let digits = decision.fromJid.replacingOccurrences(of: "[^0-9]+", with: "", options: .regularExpression)
     if !digits.isEmpty, normalizedDescription.contains(digits) {
@@ -460,6 +503,7 @@ func clickButton(
   var buttons: [AXUIElement] = []
   findAll(root, where: { role($0) == "AXButton" }, into: &buttons)
   trace("Found \(buttons.count) button candidate(s) while looking for confirmation: \(labels.joined(separator: ", ")).")
+  logButtonOptions(in: root, context: "confirmation search")
 
   let rankedButtons = buttons
     .map { element in
@@ -489,13 +533,154 @@ func clickButton(
   }
 }
 
+func containsButton(
+  matching labels: [String],
+  in root: AXUIElement
+) -> Bool {
+  let normalizedLabels = labels.map(normalized)
+  var buttons: [AXUIElement] = []
+  findAll(root, where: { role($0) == "AXButton" }, into: &buttons)
+  return buttons.contains { element in
+    let haystack = descendantText(element, depth: 2)
+    return actionLabelMatchScore(haystack: haystack, labels: normalizedLabels) != nil
+  }
+}
+
+func normalizedButtonOptions(in root: AXUIElement) -> [String] {
+  var buttons: [AXUIElement] = []
+  findAll(root, where: { role($0) == "AXButton" }, into: &buttons)
+  let options = buttons
+    .map { normalized(descendantText($0, depth: 2)) }
+    .filter { !$0.isEmpty }
+  return Array(NSOrderedSet(array: options)) as? [String] ?? options
+}
+
+func logButtonOptions(
+  in root: AXUIElement,
+  context: String
+) {
+  let options = normalizedButtonOptions(in: root)
+  let preview = options.prefix(12).joined(separator: " | ")
+  if preview.isEmpty {
+    trace("Visible button options in \(context): <none>")
+  } else {
+    trace("Visible button options in \(context): \(preview)")
+  }
+}
+
+func activeMenu(in root: AXUIElement) -> ActiveMenu? {
+  var menus: [AXUIElement] = []
+  findAll(root, where: { role($0) == "AXMenu" }, into: &menus)
+
+  let rankedMenus = menus
+    .map { menu -> (menu: AXUIElement, visibleItemCount: Int, itemCount: Int, area: CGFloat) in
+      let menuChildren = children(menu).filter { role($0) == "AXMenuItem" }
+      let itemCount = menuChildren.count
+      let visibleItemCount = menuChildren.filter { isReasonableFrame(frame($0)) && isOnScreen(frame($0)) }.count
+      let area: CGFloat
+      if let menuFrame = frame(menu) {
+        area = menuFrame.width * menuFrame.height
+      } else {
+        area = 0
+      }
+      return (menu: menu, visibleItemCount: visibleItemCount, itemCount: itemCount, area: area)
+    }
+    .filter { $0.itemCount > 0 }
+    .sorted { left, right in
+      if left.visibleItemCount != right.visibleItemCount {
+        return left.visibleItemCount > right.visibleItemCount
+      }
+      if left.itemCount != right.itemCount {
+        return left.itemCount > right.itemCount
+      }
+      return left.area > right.area
+    }
+
+  if let activeMenu = rankedMenus.first?.menu {
+    let directItems = children(activeMenu).filter { role($0) == "AXMenuItem" }
+    let visibleDirectItems = directItems.filter { isReasonableFrame(frame($0)) && isOnScreen(frame($0)) }
+    return (menu: activeMenu, items: visibleDirectItems.isEmpty ? directItems : visibleDirectItems)
+  }
+  return nil
+}
+
 func findMenuItems(in root: AXUIElement) -> [AXUIElement] {
-  var menuItems: [AXUIElement] = []
-  findAll(root, where: {
-    let itemRole = role($0)
-    return itemRole == "AXMenuItem" || itemRole == "AXMenuBarItem"
-  }, into: &menuItems)
-  return menuItems
+  activeMenu(in: root)?.items ?? []
+}
+
+func normalizedMenuOptions(_ menuItems: [AXUIElement]) -> [String] {
+  let options = menuItems
+    .map { normalized(descendantText($0, depth: 2)) }
+    .filter { !$0.isEmpty }
+
+  return Array(NSOrderedSet(array: options)) as? [String] ?? options
+}
+
+func logMenuOptions(_ menuItems: [AXUIElement]) {
+  let uniqueOptions = normalizedMenuOptions(menuItems)
+  let preview = uniqueOptions.prefix(12).joined(separator: " | ")
+  if preview.isEmpty {
+    trace("Visible context menu options: <none>")
+  } else {
+    trace("Visible context menu options: \(preview)")
+  }
+}
+
+func looksLikeWhatsAppMessageMenu(_ options: [String]) -> Bool {
+  let expected = Set([
+    "reply",
+    "react",
+    "keep",
+    "pin",
+    "forward",
+    "copy",
+    "reply privately",
+    "report",
+    "delete",
+    "select messages"
+  ])
+
+  let overlap = options.filter { option in
+    expected.contains(option) || option.hasPrefix("message ")
+  }.count
+  return overlap >= 4
+}
+
+func estimatedMenuItemClickPoint(
+  menu: AXUIElement,
+  items: [AXUIElement],
+  target: AXUIElement
+) -> CGPoint? {
+  guard let menuFrame = frame(menu), isReasonableFrame(menuFrame) else {
+    return nil
+  }
+
+  guard let index = items.firstIndex(where: { CFEqual($0, target) }) else {
+    return nil
+  }
+
+  let rowHeight = menuFrame.height / CGFloat(max(items.count, 1))
+  guard rowHeight >= 8 else {
+    return nil
+  }
+
+  return CGPoint(
+    x: menuFrame.midX,
+    y: menuFrame.minY + rowHeight * (CGFloat(index) + 0.5)
+  )
+}
+
+func activateMenuItemByKeyboard(
+  target: AXUIElement,
+  menuItems: [AXUIElement]
+) {
+  guard let index = menuItems.firstIndex(where: { CFEqual($0, target) }) else {
+    return
+  }
+
+  trace("Direct menu-item activation was unavailable; using keyboard navigation to choose menu item \(index + 1).")
+  sendKeyCodes(Array(repeating: 125, count: index)) // Down arrow
+  sendKeyCode(36) // Return
 }
 
 func clickMenuItem(
@@ -505,8 +690,10 @@ func clickMenuItem(
   consequentialLabel: String? = nil
 ) throws {
   let normalizedLabels = labels.map(normalized)
-  let menuItems = findMenuItems(in: root)
+  let activeMenuContext = activeMenu(in: root)
+  let menuItems = activeMenuContext?.items ?? []
   trace("Found \(menuItems.count) menu item candidate(s) while looking for: \(labels.joined(separator: ", ")).")
+  logMenuOptions(menuItems)
 
   let rankedMenuItems = menuItems
     .map { element in
@@ -555,14 +742,45 @@ func isSelectedMessageMode(in root: AXUIElement) -> Bool {
   return hasCancel && hasSelectedCounter
 }
 
+func selectedMessageFooterFrame(in root: AXUIElement) -> CGRect? {
+  var groups: [AXUIElement] = []
+  findAll(root, where: { role($0) == "AXGroup" }, into: &groups)
+
+  let rankedGroups = groups
+    .compactMap { element -> (frame: CGRect, text: String)? in
+      guard let elementFrame = frame(element), isReasonableFrame(elementFrame) else {
+        return nil
+      }
+      let text = normalized(descendantText(element, depth: 2))
+      guard text.contains("selected"), text.contains("cancel") else {
+        return nil
+      }
+      return (frame: elementFrame, text: text)
+    }
+    .sorted { left, right in
+      if left.frame.maxY != right.frame.maxY {
+        return left.frame.maxY > right.frame.maxY
+      }
+      return left.frame.width > right.frame.width
+    }
+
+  return rankedGroups.first?.frame
+}
+
 func clickDeleteMenuItemAndEnsureSelectionMode(
   in appElement: AXUIElement,
   decision: ModerationDecision
 ) throws {
   let labels = ["Delete", "Delete Message"]
   let normalizedLabels = labels.map(normalized)
-  let menuItems = findMenuItems(in: appElement)
+  let activeMenuContext = activeMenu(in: appElement)
+  let menuItems = activeMenuContext?.items ?? []
   trace("Found \(menuItems.count) menu item candidate(s) while looking for: \(labels.joined(separator: ", ")).")
+  logMenuOptions(menuItems)
+  let menuOptions = normalizedMenuOptions(menuItems)
+  guard looksLikeWhatsAppMessageMenu(menuOptions) else {
+    throw HookError.menuNotAvailable
+  }
 
   let rankedMenuItems = menuItems
     .map { element in
@@ -585,7 +803,7 @@ func clickDeleteMenuItemAndEnsureSelectionMode(
   trace("Attempting to activate context menu item: \(traceSnippet(descendantText(match.element, depth: 2))).")
 
   _ = perform(match.element, "AXPress")
-  wait(seconds: 0.25)
+  wait(seconds: 0.4)
 
   if let window = try? appWindow(appElement), isSelectedMessageMode(in: window) {
     trace("Delete context-menu action entered selected-message mode via AXPress.")
@@ -593,23 +811,43 @@ func clickDeleteMenuItemAndEnsureSelectionMode(
     return
   }
 
-  if let matchFrame = frame(match.element) {
+  let directClickPoint =
+    isReasonableFrame(frame(match.element))
+      ? CGPoint(x: frame(match.element)!.midX, y: frame(match.element)!.midY)
+      : activeMenuContext.flatMap { estimatedMenuItemClickPoint(menu: $0.menu, items: $0.items, target: match.element) }
+
+  if let directClickPoint {
     trace("AXPress did not change the UI; clicking the matched menu item directly.")
-    clickPoint(CGPoint(x: matchFrame.midX, y: matchFrame.midY))
-    wait(seconds: 0.25)
+    clickPoint(directClickPoint)
+    wait(seconds: 0.4)
 
     if let window = try? appWindow(appElement), isSelectedMessageMode(in: window) {
       trace("Delete context-menu action entered selected-message mode after direct click.")
       captureActionScreenshot(stage: "after", consequentialLabel: "delete-from-context-menu", decision: decision)
       return
     }
+  } else {
+    trace("Matched menu item frame was not usable for a direct-click fallback.")
+  }
+
+  activateMenuItemByKeyboard(target: match.element, menuItems: menuItems)
+  wait(seconds: 0.4)
+
+  if let window = try? appWindow(appElement), isSelectedMessageMode(in: window) {
+    trace("Delete context-menu action entered selected-message mode after keyboard fallback.")
+    captureActionScreenshot(stage: "after", consequentialLabel: "delete-from-context-menu", decision: decision)
+    return
   }
 
   captureActionScreenshot(stage: "after", consequentialLabel: "delete-from-context-menu", decision: decision)
   throw HookError.menuItemDidNotActivate(labels)
 }
 
-func clickSelectedMessageToolbarDelete(in root: AXUIElement, decision: ModerationDecision) throws {
+func clickSelectedMessageToolbarDelete(
+  in root: AXUIElement,
+  appElement: AXUIElement,
+  decision: ModerationDecision
+) throws {
   var elements: [AXUIElement] = []
   findAll(root, where: {
     let itemRole = role($0)
@@ -618,6 +856,24 @@ func clickSelectedMessageToolbarDelete(in root: AXUIElement, decision: Moderatio
   trace("Found \(elements.count) candidate(s) while looking for the selected-message delete toolbar action.")
 
   let rootFrame = frame(root)
+  let footerTexts = elements
+    .compactMap { element -> String? in
+      let elementFrame = frame(element)
+      guard let rootFrame, let elementFrame else {
+        return nil
+      }
+      let center = CGPoint(x: elementFrame.midX, y: elementFrame.midY)
+      guard center.y > rootFrame.minY + (rootFrame.height * 0.75) else {
+        return nil
+      }
+      let text = normalized(descendantText(element, depth: 2))
+      return text.isEmpty ? nil : text
+    }
+  let uniqueFooterTexts = Array(NSOrderedSet(array: footerTexts)) as? [String] ?? footerTexts
+  if !uniqueFooterTexts.isEmpty {
+    trace("Visible selected-message footer options: \(uniqueFooterTexts.prefix(10).joined(separator: " | "))")
+  }
+
   let rankedButtons = elements
     .map { element in
       let haystack = descendantText(element, depth: 2)
@@ -643,19 +899,82 @@ func clickSelectedMessageToolbarDelete(in root: AXUIElement, decision: Moderatio
       return left.haystack.count < right.haystack.count
     }
 
-  guard let match = rankedButtons.first else {
-    throw HookError.buttonNotFound(["Delete"])
+  func confirmationOpened() -> Bool {
+    guard let window = try? appWindow(appElement) else {
+      return false
+    }
+    logButtonOptions(in: window, context: "post delete-toolbar click")
+    return containsButton(
+      matching: ["Delete for everyone", "Delete for Everyone", "Delete for me"],
+      in: window
+    )
+  }
+
+  func logPostDeleteToolbarState(prefix: String) {
+    guard let window = try? appWindow(appElement) else {
+      trace("\(prefix): could not read WhatsApp window state after click.")
+      return
+    }
+
+    if confirmationOpened() {
+      trace("\(prefix): confirmation dialog detected.")
+      return
+    }
+
+    let selectedMode = isSelectedMessageMode(in: window)
+    let footerVisible = selectedMessageFooterFrame(in: window) != nil
+    trace(
+      "\(prefix): no confirmation dialog detected; selected-message mode=\(selectedMode ? "yes" : "no"), footer toolbar visible=\(footerVisible ? "yes" : "no")."
+    )
   }
 
   captureActionScreenshot(stage: "before", consequentialLabel: "delete-toolbar", decision: decision)
-  trace("Clicking selected-message delete toolbar button: \(traceSnippet(descendantText(match.element, depth: 2))).")
-  let pressResult = perform(match.element, "AXPress")
-  if pressResult != .success, let matchFrame = frame(match.element) {
-    trace("Toolbar delete element was not directly pressable; clicking its center point instead.")
-    clickPoint(CGPoint(x: matchFrame.midX, y: matchFrame.midY))
+  var openedConfirmation = false
+  if let match = rankedButtons.first {
+    trace("Clicking selected-message delete toolbar button: \(traceSnippet(descendantText(match.element, depth: 2))).")
+    let pressResult = perform(match.element, "AXPress")
+    if pressResult != .success, let matchFrame = frame(match.element) {
+      trace("Toolbar delete element was not directly pressable; clicking its center point instead.")
+      clickPoint(CGPoint(x: matchFrame.midX, y: matchFrame.midY))
+    }
+    wait(seconds: 0.35)
+    openedConfirmation = confirmationOpened()
+    logPostDeleteToolbarState(prefix: "Post labeled footer-delete click state")
+    if !openedConfirmation {
+      trace("Labeled footer delete control did not open a confirmation dialog; falling back to the bottom-center trash control.")
+    }
+  } else if rootFrame != nil {
+    trace("Footer delete button was not labeled accessibly; clicking the bottom-center delete control instead.")
+  } else {
+    throw HookError.buttonNotFound(["Delete"])
   }
-  wait(seconds: 0.3)
+
+  if !openedConfirmation, let footerFrame = selectedMessageFooterFrame(in: root) {
+    let fallbackPoint = CGPoint(
+      x: footerFrame.midX,
+      y: footerFrame.midY
+    )
+    trace("Clicking the center of the selected-message footer toolbar as a trash-icon fallback.")
+    clickPoint(fallbackPoint)
+    wait(seconds: 0.4)
+    openedConfirmation = confirmationOpened()
+    logPostDeleteToolbarState(prefix: "Post footer-toolbar-center click state")
+  } else if !openedConfirmation, let rootFrame {
+    let fallbackPoint = CGPoint(
+      x: rootFrame.midX,
+      y: rootFrame.maxY - max(28, rootFrame.height * 0.035)
+    )
+    trace("Footer toolbar frame was not discoverable; clicking the bottom-center delete control instead.")
+    clickPoint(fallbackPoint)
+    wait(seconds: 0.4)
+    openedConfirmation = confirmationOpened()
+    logPostDeleteToolbarState(prefix: "Post bottom-center click state")
+  }
+
   captureActionScreenshot(stage: "after", consequentialLabel: "delete-toolbar", decision: decision)
+  if !openedConfirmation {
+    throw HookError.buttonNotFound(["Delete for everyone", "Delete for Everyone"])
+  }
 }
 
 func chooseMenuItem(
@@ -739,9 +1058,13 @@ func handleDeleteMessage(_ decision: ModerationDecision, appElement: AXUIElement
   }
   trace("Opened context menu for the matched message.")
   wait(seconds: 0.3)
-  try clickDeleteMenuItemAndEnsureSelectionMode(in: appElement, decision: decision)
+  do {
+    try clickDeleteMenuItemAndEnsureSelectionMode(in: appElement, decision: decision)
+  } catch HookError.menuItemDidNotActivate {
+    trace("Delete menu selection may still have worked; attempting the footer delete step anyway.")
+  }
   let refreshedWindow = try appWindow(appElement)
-  try clickSelectedMessageToolbarDelete(in: refreshedWindow, decision: decision)
+  try clickSelectedMessageToolbarDelete(in: refreshedWindow, appElement: appElement, decision: decision)
   let confirmationWindow = try appWindow(appElement)
   try clickButton(
     containing: ["Delete for everyone", "Delete for Everyone"],
