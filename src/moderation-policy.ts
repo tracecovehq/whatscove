@@ -80,6 +80,7 @@ export async function loadModerationPolicy(
         : "queue",
     actions: defaultActions,
     ignoreLocallyBannedUsers: parsed.ignoreLocallyBannedUsers === true,
+    skipAdminSenders: parsed.skipAdminSenders !== false,
     captureActionScreenshots: parsed.captureActionScreenshots === true,
     screenshotDirectory:
       typeof parsed.screenshotDirectory === "string" && parsed.screenshotDirectory.trim()

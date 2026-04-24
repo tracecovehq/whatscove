@@ -174,6 +174,7 @@ export interface ModerationPolicy {
   mode: ModerationMode;
   actions: ModerationActionType[];
   ignoreLocallyBannedUsers: boolean;
+  skipAdminSenders: boolean;
   captureActionScreenshots: boolean;
   screenshotDirectory: string;
   hookCommand: string;

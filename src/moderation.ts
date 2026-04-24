@@ -72,7 +72,7 @@ export function planModerationDecisions(
   const decisions: ModerationDecision[] = [];
 
   for (const match of matches) {
-    if (match.senderIsAdmin === true) {
+    if (policy.skipAdminSenders && match.senderIsAdmin === true) {
       continue;
     }
 

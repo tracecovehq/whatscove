@@ -737,6 +737,7 @@ test("loadModerationPolicy loads the default moderation config", async () => {
   assert.equal(policy.mode, "queue");
   assert.deepEqual(policy.actions, ["delete_message", "remove_sender"]);
   assert.equal(policy.ignoreLocallyBannedUsers, false);
+  assert.equal(policy.skipAdminSenders, true);
   assert.equal(policy.captureActionScreenshots, true);
   assert.equal(policy.screenshotDirectory, DEFAULT_MODERATION_SCREENSHOT_DIR);
 });
@@ -754,6 +755,7 @@ test("loadModerationPolicy reads a YAML moderation config", async () => {
       "actions:",
       "  - notify",
       "ignoreLocallyBannedUsers: true",
+      "skipAdminSenders: false",
       "captureActionScreenshots: false",
       "screenshotDirectory: /tmp/mod-shots",
       "hookCommand: echo moderation",
@@ -768,6 +770,7 @@ test("loadModerationPolicy reads a YAML moderation config", async () => {
   assert.equal(policy.policyPath, policyPath);
   assert.equal(policy.mode, "apply");
   assert.deepEqual(policy.actions, ["notify"]);
+  assert.equal(policy.skipAdminSenders, false);
   assert.equal(policy.captureActionScreenshots, false);
   assert.equal(policy.screenshotDirectory, "/tmp/mod-shots");
 });
@@ -779,6 +782,7 @@ test("planModerationDecisions creates queued actions for real spam matches", () 
     mode: "queue",
     actions: ["delete_message", "remove_sender"],
     ignoreLocallyBannedUsers: false,
+    skipAdminSenders: true,
     captureActionScreenshots: false,
     screenshotDirectory: "",
     hookCommand: "",
@@ -820,6 +824,7 @@ test("planModerationDecisions skips moderation actions for admin senders", () =>
     mode: "queue",
     actions: ["delete_message", "remove_sender"],
     ignoreLocallyBannedUsers: false,
+    skipAdminSenders: true,
     captureActionScreenshots: false,
     screenshotDirectory: "",
     hookCommand: "",
@@ -850,6 +855,47 @@ test("planModerationDecisions skips moderation actions for admin senders", () =>
   assert.deepEqual(decisions, []);
 });
 
+test("planModerationDecisions can allow admin senders when skipAdminSenders is false", () => {
+  const policy: ModerationPolicy = {
+    policyPath: "/tmp/mod.json",
+    enabled: true,
+    mode: "queue",
+    actions: ["delete_message", "remove_sender"],
+    ignoreLocallyBannedUsers: false,
+    skipAdminSenders: false,
+    captureActionScreenshots: false,
+    screenshotDirectory: "",
+    hookCommand: "",
+    perRule: {}
+  };
+  const adminMatch: SuspiciousMatch = {
+    fingerprint: "admin-allowed",
+    messagePk: 101,
+    chatName: "General",
+    chatJid: "1203634@g.us",
+    senderName: "Admin Example",
+    fromJid: "admin@s.whatsapp.net",
+    senderIsAdmin: true,
+    messageType: 0,
+    messageTimeLocal: "2026-04-24 08:01:00",
+    ruleId: "us-stock-group-invite",
+    ruleLabel: "US stock promo invite",
+    text: "Admin posted a spam example",
+    score: 0.99,
+    reasons: ["matches spam rule"]
+  };
+
+  const decisions = planModerationDecisions([adminMatch], policy, {
+    locallyBannedUsers: [],
+    processedDecisionIds: []
+  });
+
+  assert.deepEqual(
+    decisions.map((decision) => decision.action),
+    ["delete_message", "remove_sender"]
+  );
+});
+
 test("getActionsForMatch applies per-rule moderation overrides", () => {
   const policy: ModerationPolicy = {
     policyPath: "/tmp/mod.json",
@@ -857,6 +903,7 @@ test("getActionsForMatch applies per-rule moderation overrides", () => {
     mode: "queue",
     actions: ["delete_message", "remove_sender"],
     ignoreLocallyBannedUsers: true,
+    skipAdminSenders: true,
     captureActionScreenshots: false,
     screenshotDirectory: "",
     hookCommand: "",

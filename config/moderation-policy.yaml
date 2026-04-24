@@ -9,6 +9,8 @@ actions:
   - remove_sender
 # Keep false if you still want to see repeat spam after a failed moderation attempt.
 ignoreLocallyBannedUsers: false
+# Keep true to log admin-posted examples but avoid deleting/removing admins automatically.
+skipAdminSenders: true
 # When true, save before/after screenshots around destructive UI actions.
 captureActionScreenshots: true
 # Optional absolute path. Leave empty to use data/moderation-screenshots/.

@@ -64,6 +64,8 @@ Moderation policy toggles:
   Turn default actions on or off by including or removing `delete_message`, `remove_sender`, or `notify`.
 - `ignoreLocallyBannedUsers: true|false`
   Leave this `false` if you want moderators to keep seeing repeat spam after failures.
+- `skipAdminSenders: true|false`
+  Leave this `true` to keep logging admin-posted spam examples without auto-deleting messages or removing admins. Set it to `false` only if you intentionally want admins to be auto-moderated too.
 - `captureActionScreenshots: true|false`
   Turn before/after screenshots for destructive UI actions on or off.
 - `screenshotDirectory: "/absolute/path"`
