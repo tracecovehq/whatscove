@@ -35,6 +35,21 @@ interface ParsedArgs {
   moderationMode: "detect" | "queue" | "apply" | "";
 }
 
+const ANSI = {
+  reset: "\u001B[0m",
+  bold: "\u001B[1m",
+  dim: "\u001B[2m",
+  red: "\u001B[31m",
+  green: "\u001B[32m",
+  yellow: "\u001B[33m",
+  blue: "\u001B[34m",
+  magenta: "\u001B[35m",
+  cyan: "\u001B[36m"
+} as const;
+
+type WatchEntryStyle = "strong" | "weak" | "system";
+type MarkerTone = "info" | "error" | "success" | "warning";
+
 function parseOptionalNumber(value: string | undefined, flag: string): number | undefined {
   if (typeof value !== "string") {
     return undefined;
@@ -94,6 +109,132 @@ function buildChronologicalWatchStream(
     ...freshMatches.map((match) => ({ kind: "suspicious" as const, match })),
     ...freshWeakMatches.map((match) => ({ kind: "weak" as const, match }))
   ].sort(compareWatchStreamEntries);
+}
+
+function supportsColor(): boolean {
+  return Boolean(process.stdout.isTTY) && process.env.NO_COLOR == null;
+}
+
+function colorize(text: string, ...codes: string[]): string {
+  if (!supportsColor() || codes.length === 0) {
+    return text;
+  }
+
+  return `${codes.join("")}${text}${ANSI.reset}`;
+}
+
+function colorizeLinePrefix(line: string, prefix: string, ...codes: string[]): string {
+  return line.startsWith(prefix)
+    ? `${colorize(prefix, ...codes)}${line.slice(prefix.length)}`
+    : line;
+}
+
+function classifyWatchEntry(entry: WatchStreamEntry): WatchEntryStyle {
+  if (entry.kind === "suspicious") {
+    return "strong";
+  }
+
+  if (
+    entry.match.ruleId == null ||
+    entry.match.ruleLabel === "No spam rule signal" ||
+    entry.match.messageType !== 0 ||
+    entry.match.text.startsWith("WhatsApp ")
+  ) {
+    return "system";
+  }
+
+  return "weak";
+}
+
+function formatMarker(label: string): string {
+  return `${label.padEnd(5, " ")} `;
+}
+
+function styleConfig(kind: WatchEntryStyle): {
+  indicator: string;
+  titleCodes: string[];
+} {
+  switch (kind) {
+    case "strong":
+      return {
+        indicator: formatMarker("SPAM"),
+        titleCodes: [ANSI.bold, ANSI.red]
+      };
+    case "weak":
+      return {
+        indicator: formatMarker("WEAK"),
+        titleCodes: [ANSI.bold, ANSI.yellow]
+      };
+    case "system":
+      return {
+        indicator: formatMarker("SYS"),
+        titleCodes: [ANSI.bold, ANSI.cyan]
+      };
+  }
+}
+
+function renderWatchEntry(entry: WatchStreamEntry): string {
+  const raw =
+    entry.kind === "suspicious"
+      ? formatScanOutput({ matches: [entry.match] })
+      : formatWeakScanOutput({ weakMatches: [entry.match] });
+  const config = styleConfig(classifyWatchEntry(entry));
+  const lines = raw.split("\n");
+
+  if (lines.length > 0) {
+    lines[0] = `${colorize(config.indicator, ...config.titleCodes)} ${colorize(lines[0], ...config.titleCodes)}`;
+  }
+
+  for (let index = 1; index < lines.length; index += 1) {
+    lines[index] = colorizeLinePrefix(lines[index], "Time:", ANSI.bold, ANSI.blue);
+    lines[index] = colorizeLinePrefix(lines[index], "Message:", ANSI.bold);
+    lines[index] = colorizeLinePrefix(lines[index], "Why:", ANSI.bold, ANSI.magenta);
+    lines[index] = colorizeLinePrefix(lines[index], "Matched phrases:", ANSI.bold, ANSI.yellow);
+    if (/^-{10,}$/.test(lines[index] ?? "")) {
+      lines[index] = colorize(lines[index] ?? "", ANSI.dim);
+    }
+  }
+
+  return lines.join("\n");
+}
+
+function markerCodes(tone: MarkerTone): string[] {
+  switch (tone) {
+    case "info":
+      return [ANSI.bold, ANSI.cyan];
+    case "error":
+      return [ANSI.bold, ANSI.red];
+    case "success":
+      return [ANSI.bold, ANSI.green];
+    case "warning":
+      return [ANSI.bold, ANSI.yellow];
+  }
+}
+
+function renderStatusLine(label: string, prefix: string, message: string, tone: MarkerTone): string {
+  return `${colorize(formatMarker(label), ...markerCodes(tone))} ${colorize(prefix, ANSI.dim)} ${message}`;
+}
+
+function renderInfoLine(prefix: string, message: string): string {
+  return renderStatusLine("INFO", prefix, message, "info");
+}
+
+function renderErrorLine(prefix: string, message: string): string {
+  return renderStatusLine("ERROR", prefix, colorize(message, ANSI.red), "error");
+}
+
+function renderModerationSummary(prefix: string, decisions: ModerationDecision[]): string {
+  const hasFailed = decisions.some((decision) => decision.status === "failed");
+  const hasApplied = decisions.some((decision) => decision.status === "applied");
+  const label = hasFailed ? "ACTION" : "APPLY";
+  const tone: MarkerTone = hasFailed ? "error" : hasApplied ? "success" : "warning";
+
+  return renderStatusLine(
+    label,
+    prefix,
+    `moderation decisions: ${decisions.map(formatModerationDecision).join(", ")}`,
+    tone
+  );
 }
 
 function parseCliArgs(argv: string[]): ParsedArgs {
@@ -219,14 +360,22 @@ async function main(): Promise<void> {
   if (args.command === "watch") {
     const moderationPreflightError = await preflightBundledModerationHook(moderationPolicy);
     console.log(
-      `Watching WhatsApp every ${(args.pollMs / 1000).toFixed(0)}s with minimum score ${effectiveMinScore.toFixed(2)} across ${loadedRules.rules.length} spam rule(s)${
-        typeof effectiveWeakMinScore === "number"
-          ? ` and weak-match logging from ${effectiveWeakMinScore.toFixed(2)}`
-          : ""
-      }`
+      renderInfoLine(
+        "[watch]",
+        `Watching WhatsApp every ${(args.pollMs / 1000).toFixed(0)}s with minimum score ${effectiveMinScore.toFixed(2)} across ${loadedRules.rules.length} spam rule(s)${
+          typeof effectiveWeakMinScore === "number"
+            ? ` and weak-match logging from ${effectiveWeakMinScore.toFixed(2)}`
+            : ""
+        }`
+      )
     );
     if (moderationPreflightError) {
-      console.warn(`[preflight] bundled moderation hook is not ready: ${moderationPreflightError}`);
+      console.warn(
+        renderErrorLine(
+          "[preflight]",
+          `bundled moderation hook is not ready: ${moderationPreflightError}`
+        )
+      );
     }
 
     await bot.watch((result) => {
@@ -239,28 +388,22 @@ async function main(): Promise<void> {
       );
 
       if (watchStream.length === 0) {
-        console.log(`${prefix} scan complete, no new spam-rule matches.`);
+        console.log(renderInfoLine(prefix, "scan complete, no new spam-rule matches."));
         return;
       }
 
       console.log(
-        `${prefix} ${watchStream.length} new log entr${watchStream.length === 1 ? "y" : "ies"}:`
+        renderInfoLine(
+          prefix,
+          `${watchStream.length} new log entr${watchStream.length === 1 ? "y" : "ies"}:`
+        )
       );
       for (const entry of watchStream) {
-        if (entry.kind === "suspicious") {
-          console.log(formatScanOutput({ matches: [entry.match] }));
-          continue;
-        }
-
-        console.log(formatWeakScanOutput({ weakMatches: [entry.match] }));
+        console.log(renderWatchEntry(entry));
       }
 
       if (result.moderationDecisions.length > 0) {
-        console.log(
-          `${prefix} moderation decisions: ${result.moderationDecisions
-            .map(formatModerationDecision)
-            .join(", ")}`
-        );
+        console.log(renderModerationSummary(prefix, result.moderationDecisions));
       }
     });
     return;
