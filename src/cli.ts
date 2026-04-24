@@ -2,16 +2,18 @@ import { readFile } from "node:fs/promises";
 import { parseArgs as parseNodeArgs } from "node:util";
 import {
   WhatsAppSpamGuard,
+  findSuspiciousEntries,
   formatScanOutput,
   formatWeakScanOutput,
   sortMatchesChronologically
 } from "./bot.ts";
+import { coerceFixtureSnapshot } from "./fixture.ts";
 import { preflightBundledModerationHook } from "./moderation.ts";
 import { loadModerationPolicy } from "./moderation-policy.ts";
 import { appendSpamRule, loadSpamRules } from "./spam-rules.ts";
-import type { ModerationDecision, SuspiciousMatch } from "./types.ts";
+import type { MessageSnapshot, ModerationDecision, SuspiciousMatch } from "./types.ts";
 
-type CliCommand = "scan" | "watch" | "add-rule";
+type CliCommand = "scan" | "watch" | "add-rule" | "fixture";
 
 interface ParsedArgs {
   command: CliCommand;
@@ -28,6 +30,7 @@ interface ParsedArgs {
   ruleLabel: string;
   template: string;
   templateFile: string;
+  fixtureFile: string;
   anchorPhrases: string[];
   tags: string[];
   requireInviteLink: boolean;
@@ -244,7 +247,7 @@ function renderModerationSummary(prefix: string, decisions: ModerationDecision[]
 function parseCliArgs(argv: string[]): ParsedArgs {
   const [firstArg, ...restArgs] = argv;
   const hasExplicitCommand =
-    firstArg === "scan" || firstArg === "watch" || firstArg === "add-rule";
+    firstArg === "scan" || firstArg === "watch" || firstArg === "add-rule" || firstArg === "fixture";
   const command: CliCommand = hasExplicitCommand ? firstArg : "scan";
   const args = hasExplicitCommand ? restArgs : argv;
 
@@ -269,6 +272,7 @@ function parseCliArgs(argv: string[]): ParsedArgs {
       label: { type: "string" },
       template: { type: "string" },
       "template-file": { type: "string" },
+      "fixture-file": { type: "string" },
       anchor: { type: "string", multiple: true },
       tag: { type: "string", multiple: true }
     }
@@ -295,6 +299,7 @@ function parseCliArgs(argv: string[]): ParsedArgs {
     ruleLabel: values.label ?? "",
     template: values.template ?? "",
     templateFile: values["template-file"] ?? "",
+    fixtureFile: values["fixture-file"] ?? "",
     anchorPhrases: parseStringArray(values.anchor),
     tags: parseStringArray(values.tag),
     requireInviteLink: values["require-invite-link"],
@@ -309,6 +314,26 @@ async function readTemplateText(args: ParsedArgs): Promise<string> {
   }
 
   return args.template;
+}
+
+async function readFixtureSnapshot(args: ParsedArgs): Promise<MessageSnapshot> {
+  if (!args.fixtureFile) {
+    throw new Error("The fixture command requires --fixture-file <path>.");
+  }
+
+  const raw = await readFile(args.fixtureFile, "utf8");
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    throw new Error(
+      `Failed to parse fixture JSON from ${args.fixtureFile}: ${
+        error instanceof Error ? error.message : String(error)
+      }`
+    );
+  }
+
+  return coerceFixtureSnapshot(parsed, args.fixtureFile);
 }
 
 async function main(): Promise<void> {
@@ -348,6 +373,58 @@ async function main(): Promise<void> {
 
   const effectiveMinScore = args.minScore ?? 0.72;
   const effectiveWeakMinScore = args.weakMinScore;
+
+  if (args.command === "fixture") {
+    const snapshot = await readFixtureSnapshot(args);
+    const { matches, weakMatches } = await findSuspiciousEntries(snapshot, {
+      minScore: effectiveMinScore,
+      weakMinScore: effectiveWeakMinScore,
+      rules: loadedRules.rules
+    });
+
+    if (args.json) {
+      console.log(
+        JSON.stringify(
+          {
+            fetchedAt: snapshot.fetchedAt,
+            databasePath: snapshot.databasePath,
+            rulesPath: loadedRules.rulesPath,
+            ruleCount: loadedRules.rules.length,
+            scannedMessages: snapshot.messages.length,
+            matchCount: matches.length,
+            weakMatchCount: weakMatches.length,
+            matches,
+            weakMatches
+          },
+          null,
+          2
+        )
+      );
+      return;
+    }
+
+    const watchStream = buildChronologicalWatchStream(
+      sortMatchesChronologically(matches),
+      sortMatchesChronologically(weakMatches)
+    );
+    console.log(
+      renderInfoLine(
+        "[fixture]",
+        `Loaded ${snapshot.messages.length} fixture message(s) from ${args.fixtureFile}`
+      )
+    );
+
+    if (watchStream.length === 0) {
+      console.log(renderInfoLine("[fixture]", "No spam-rule matches met the active thresholds."));
+      return;
+    }
+
+    for (const entry of watchStream) {
+      console.log(renderWatchEntry(entry));
+    }
+    return;
+  }
+
   const bot = new WhatsAppSpamGuard({
     minScore: effectiveMinScore,
     weakMinScore: effectiveWeakMinScore,

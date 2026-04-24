@@ -16,6 +16,7 @@ import {
   getDefaultSpamRules,
   normalizeText
 } from "../src/detection.ts";
+import { coerceFixtureSnapshot } from "../src/fixture.ts";
 import {
   getActionsForMatch,
   getBundledHookCommand,
@@ -204,6 +205,57 @@ test("createTextCandidates combines WhatsApp invite card fields", () => {
       "https://chat.whatsapp.com/example\nIndians-US Stock Investors Group\nGroup chat invite\nInvestment enthusiasts are welcome to join."
     )
   );
+});
+
+test("coerceFixtureSnapshot normalizes a single fixture row with defaults", () => {
+  const snapshot = coerceFixtureSnapshot(
+    {
+      text: "TEST ONLY fixture text"
+    },
+    "inline-fixture.json",
+    new Date("2026-04-24T20:00:00.000Z")
+  );
+
+  assert.equal(snapshot.databasePath, "fixture:inline-fixture.json");
+  assert.equal(snapshot.messages.length, 1);
+  assert.equal(snapshot.messages[0]?.messagePk, 1);
+  assert.equal(snapshot.messages[0]?.chatName, "Fixture Testing");
+  assert.equal(snapshot.messages[0]?.senderName, "Fixture Sender");
+  assert.equal(snapshot.messages[0]?.text, "TEST ONLY fixture text");
+});
+
+test("fixture snapshots can simulate split-field WhatsApp invite spam safely", async () => {
+  const snapshot = coerceFixtureSnapshot(
+    {
+      messages: [
+        {
+          messagePk: 301,
+          messageTimeUtc: "2026-04-24T12:00:00.000Z",
+          messageTimeLocal: "2026-04-24 05:00:00",
+          chatName: "Fixture Community",
+          chatJid: "fixture-community@g.us",
+          fromJid: "fixture-spammer@lid",
+          senderName: "Fixture Sender",
+          messageType: 0,
+          text: "TEST ONLY: detector exercise with CTA link.\nhttps://example.test/wa-preview",
+          previewTitle: "TEST ONLY - US stock knowledge group",
+          previewSummary: "Group chat invite",
+          previewContent1:
+            "TEST ONLY - latest information of various stocks, information for free, welcome to join",
+          previewContent2: "https://example.test/wa-preview"
+        }
+      ]
+    },
+    "split-fields.json"
+  );
+
+  const result = await findSuspiciousEntries(snapshot, { weakMinScore: 0.1 });
+
+  assert.equal(result.matches.length, 1);
+  assert.equal(result.weakMatches.length, 0);
+  assert.equal(result.matches[0]?.ruleId, "us-stock-group-invite");
+  assert.ok((result.matches[0]?.score ?? 0) >= 0.5);
+  assert.match(result.matches[0]?.text ?? "", /TEST ONLY - US stock knowledge group/);
 });
 
 test("default rules detect the longer blue harbor spam-like phrase", async () => {
