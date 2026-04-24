@@ -131,14 +131,19 @@ async function runProcess(
     });
 
     child.on("error", reject);
-    child.on("close", (code) => {
+    child.on("close", (code, signal) => {
       if (code === 0) {
         resolve();
         return;
       }
+
+      const terminationDetail =
+        typeof signal === "string"
+          ? `Moderation hook was terminated by signal ${signal}. This often happens when the macOS GUI session is unavailable, such as while the Mac is locked or asleep.`
+          : `Moderation hook exited with non-zero status ${String(code)}`;
       reject(
         new Error(
-          stderr.trim() || `Moderation hook exited with non-zero status ${String(code)}`
+          stderr.trim() || terminationDetail
         )
       );
     });

@@ -14,8 +14,11 @@ struct ModerationDecision: Decodable {
 enum HookError: Error, CustomStringConvertible {
   case appNotRunning
   case noWindow
+  case guiSessionUnavailable
   case chatNotFound(String)
   case messageNotFound(String)
+  case menuNotAvailable
+  case menuItemNotFound([String])
   case buttonNotFound([String])
   case unsupportedAction(String)
   case accessibilityDenied
@@ -26,10 +29,16 @@ enum HookError: Error, CustomStringConvertible {
       return "WhatsApp is not running."
     case .noWindow:
       return "WhatsApp does not have an accessible window."
+    case .guiSessionUnavailable:
+      return "Moderation actions require an active macOS GUI session. They will not run while the Mac is locked, at the login window, or asleep."
     case let .chatNotFound(chatName):
       return "Could not find chat '\(chatName)' in WhatsApp."
     case let .messageNotFound(snippet):
       return "Could not find a visible message matching '\(snippet)'."
+    case .menuNotAvailable:
+      return "Could not open the WhatsApp moderation menu for the matched message."
+    case let .menuItemNotFound(labels):
+      return "Could not find any moderation menu item matching: \(labels.joined(separator: ", "))."
     case let .buttonNotFound(labels):
       return "Could not find any confirmation button matching: \(labels.joined(separator: ", "))."
     case let .unsupportedAction(action):
@@ -117,6 +126,7 @@ func sendText(_ text: String) {
 
 func appElement() throws -> AXUIElement {
   try ensureAccessibilityPermission()
+  try ensureInteractiveGuiSession()
 
   guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: "net.whatsapp.WhatsApp").first else {
     throw HookError.appNotRunning
@@ -128,6 +138,20 @@ func appElement() throws -> AXUIElement {
 func ensureAccessibilityPermission() throws {
   guard AXIsProcessTrusted() else {
     throw HookError.accessibilityDenied
+  }
+}
+
+func ensureInteractiveGuiSession() throws {
+  guard let session = CGSessionCopyCurrentDictionary() as? [String: Any] else {
+    throw HookError.guiSessionUnavailable
+  }
+
+  let onConsole = (session[kCGSessionOnConsoleKey as String] as? Bool) ?? false
+  let loginDone = (session[kCGSessionLoginDoneKey as String] as? Bool) ?? false
+  let screenLocked = (session["CGSSessionScreenIsLocked"] as? Bool) ?? false
+
+  if !onConsole || !loginDone || screenLocked {
+    throw HookError.guiSessionUnavailable
   }
 }
 
@@ -255,10 +279,45 @@ func clickButton(containing labels: [String], in root: AXUIElement) throws {
   _ = perform(button, "AXPress")
 }
 
-func chooseMenuItem(searchText: String, confirmLabels: [String], appElement: AXUIElement) throws {
-  sendText(searchText)
+func findMenuItems(in root: AXUIElement) -> [AXUIElement] {
+  var menuItems: [AXUIElement] = []
+  findAll(root, where: {
+    let itemRole = role($0)
+    return itemRole == "AXMenuItem" || itemRole == "AXMenuBarItem"
+  }, into: &menuItems)
+  return menuItems
+}
+
+func clickMenuItem(containing labels: [String], in root: AXUIElement) throws {
+  let normalizedLabels = labels.map(normalized)
+  let menuItems = findMenuItems(in: root)
+
+  guard let menuItem = menuItems.first(where: { element in
+    let haystack = normalized(combinedText(element))
+    return normalizedLabels.contains(where: { haystack.contains($0) })
+  }) else {
+    throw HookError.menuItemNotFound(labels)
+  }
+
+  _ = perform(menuItem, "AXPress")
+}
+
+func chooseMenuItem(searchText: String, menuLabels: [String], confirmLabels: [String], appElement: AXUIElement) throws {
   wait(seconds: 0.15)
-  sendKeyCode(36)
+
+  do {
+    try clickMenuItem(containing: menuLabels, in: appElement)
+  } catch HookError.menuItemNotFound {
+    let hasMenu = !findMenuItems(in: appElement).isEmpty
+    guard hasMenu else {
+      throw HookError.menuNotAvailable
+    }
+
+    sendText(searchText)
+    wait(seconds: 0.15)
+    sendKeyCode(36)
+  }
+
   wait(seconds: 0.8)
 
   do {
@@ -285,10 +344,13 @@ func notify(_ decision: ModerationDecision) throws {
 func handleDeleteMessage(_ decision: ModerationDecision, appElement: AXUIElement) throws {
   let window = try openChat(named: decision.chatName, appElement: appElement)
   let message = try findMessage(decision, in: window)
-  _ = perform(message, "AXShowMenu")
+  guard perform(message, "AXShowMenu") == .success else {
+    throw HookError.menuNotAvailable
+  }
   wait(seconds: 0.3)
   try chooseMenuItem(
     searchText: "delete",
+    menuLabels: ["Delete", "Delete Message", "Delete for everyone", "Delete for Everyone"],
     confirmLabels: ["Delete", "Delete Message", "Delete for everyone", "Delete for Everyone"],
     appElement: appElement
   )
@@ -297,10 +359,13 @@ func handleDeleteMessage(_ decision: ModerationDecision, appElement: AXUIElement
 func handleRemoveSender(_ decision: ModerationDecision, appElement: AXUIElement) throws {
   let window = try openChat(named: decision.chatName, appElement: appElement)
   let message = try findMessage(decision, in: window)
-  _ = perform(message, "AXShowMenu")
+  guard perform(message, "AXShowMenu") == .success else {
+    throw HookError.menuNotAvailable
+  }
   wait(seconds: 0.3)
   try chooseMenuItem(
     searchText: "remove",
+    menuLabels: ["Remove", "Remove participant", "Remove from group", "Remove from community"],
     confirmLabels: ["Remove", "Remove participant", "Remove from group", "Remove from community", "OK"],
     appElement: appElement
   )
@@ -314,6 +379,7 @@ do {
   switch decision.action {
   case "preflight_accessibility":
     try ensureAccessibilityPermission()
+    try ensureInteractiveGuiSession()
   case "notify":
     try notify(decision)
   case "delete_message":
