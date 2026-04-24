@@ -123,6 +123,7 @@ export async function findSuspiciousEntries(
         chatJid: row.chatJid,
         senderName: row.senderName,
         fromJid: getModerationSenderJid(row),
+        senderIsAdmin: Boolean(row.senderIsAdmin),
         messageType: row.messageType,
         messageTimeLocal: row.messageTimeLocal,
         ruleId: isZeroSignal ? undefined : result.ruleId,

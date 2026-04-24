@@ -37,6 +37,7 @@ export function normalizeFixtureRow(
     chatJid: row.chatJid ?? "fixture-chat@g.us",
     fromJid: row.fromJid ?? "fixture-sender@lid",
     senderName: row.senderName ?? "Fixture Sender",
+    senderIsAdmin: typeof row.senderIsAdmin === "boolean" ? row.senderIsAdmin : false,
     messageType: Number.isFinite(row.messageType) ? Number(row.messageType) : 0,
     groupEventType:
       typeof row.groupEventType === "number" ? row.groupEventType : null,

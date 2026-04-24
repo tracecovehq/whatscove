@@ -72,6 +72,10 @@ export function planModerationDecisions(
   const decisions: ModerationDecision[] = [];
 
   for (const match of matches) {
+    if (match.senderIsAdmin === true) {
+      continue;
+    }
+
     if (
       policy.ignoreLocallyBannedUsers &&
       match.fromJid &&

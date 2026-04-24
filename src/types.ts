@@ -60,6 +60,7 @@ export interface MessageRow {
   chatJid: string;
   fromJid: string;
   senderName: string;
+  senderIsAdmin?: boolean | null;
   messageType: number;
   groupEventType?: number | null;
   text: string | null;
@@ -117,6 +118,7 @@ export interface SuspiciousMatch {
   chatJid: string;
   senderName: string;
   fromJid: string;
+  senderIsAdmin?: boolean;
   messageType: number;
   messageTimeLocal: string;
   ruleId?: string;

@@ -57,6 +57,7 @@ function buildMessageQuery(options: FetchRecentMessagesOptions): string {
         NULLIF(m.ZPUSHNAME, ''),
         m.ZFROMJID
       ) AS senderName,
+      COALESCE(gm.ZISADMIN, 0) AS senderIsAdmin,
       m.ZMESSAGETYPE AS messageType,
       m.ZGROUPEVENTTYPE AS groupEventType,
       m.ZTEXT AS text,

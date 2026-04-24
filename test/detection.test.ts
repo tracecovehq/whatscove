@@ -813,6 +813,43 @@ test("planModerationDecisions creates queued actions for real spam matches", () 
   assert.ok(decisions.every((decision) => decision.messageTimeLocal === "2026-04-22 15:00:00"));
 });
 
+test("planModerationDecisions skips moderation actions for admin senders", () => {
+  const policy: ModerationPolicy = {
+    policyPath: "/tmp/mod.json",
+    enabled: true,
+    mode: "queue",
+    actions: ["delete_message", "remove_sender"],
+    ignoreLocallyBannedUsers: false,
+    captureActionScreenshots: false,
+    screenshotDirectory: "",
+    hookCommand: "",
+    perRule: {}
+  };
+  const adminMatch: SuspiciousMatch = {
+    fingerprint: "admin123",
+    messagePk: 100,
+    chatName: "General",
+    chatJid: "1203634@g.us",
+    senderName: "Admin Example",
+    fromJid: "admin@s.whatsapp.net",
+    senderIsAdmin: true,
+    messageType: 0,
+    messageTimeLocal: "2026-04-24 08:00:00",
+    ruleId: "us-stock-group-invite",
+    ruleLabel: "US stock promo invite",
+    text: "Admin posted a spam example",
+    score: 0.99,
+    reasons: ["matches spam rule"]
+  };
+
+  const decisions = planModerationDecisions([adminMatch], policy, {
+    locallyBannedUsers: [],
+    processedDecisionIds: []
+  });
+
+  assert.deepEqual(decisions, []);
+});
+
 test("getActionsForMatch applies per-rule moderation overrides", () => {
   const policy: ModerationPolicy = {
     policyPath: "/tmp/mod.json",
