@@ -3,12 +3,16 @@ import ApplicationServices
 import Foundation
 
 struct ModerationDecision: Decodable {
+  let id: String?
   let action: String
   let chatName: String
   let senderName: String
   let fromJid: String
   let messageTimeLocal: String?
+  let messagePk: Int?
   let text: String
+  let captureActionScreenshots: Bool?
+  let screenshotDirectory: String?
 }
 
 enum HookError: Error, CustomStringConvertible {
@@ -63,6 +67,72 @@ func normalized(_ text: String) -> String {
       with: " ",
       options: .regularExpression
     )
+}
+
+func trace(_ message: String) {
+  FileHandle.standardOutput.write(Data("TRACE: \(message)\n".utf8))
+}
+
+func traceSnippet(_ text: String, limit: Int = 120) -> String {
+  let trimmed = text.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+    .trimmingCharacters(in: .whitespacesAndNewlines)
+  if trimmed.count <= limit {
+    return trimmed
+  }
+  return "\(trimmed.prefix(limit))..."
+}
+
+func sanitizedPathComponent(_ text: String) -> String {
+  let normalizedText = normalized(text).replacingOccurrences(of: " ", with: "-")
+  let trimmed = String(normalizedText.prefix(48))
+  return trimmed.isEmpty ? "item" : trimmed
+}
+
+func screenshotBaseName(for decision: ModerationDecision) -> String {
+  if let id = decision.id, !id.isEmpty {
+    return id
+  }
+
+  let pk = decision.messagePk.map(String.init) ?? "unknown"
+  return "\(decision.action)-\(pk)"
+}
+
+func captureActionScreenshot(
+  stage: String,
+  consequentialLabel: String,
+  decision: ModerationDecision
+) {
+  guard decision.captureActionScreenshots == true,
+        let screenshotDirectory = decision.screenshotDirectory,
+        !screenshotDirectory.isEmpty else {
+    return
+  }
+
+  do {
+    try FileManager.default.createDirectory(
+      atPath: screenshotDirectory,
+      withIntermediateDirectories: true
+    )
+    let timestamp = ISO8601DateFormatter().string(from: Date())
+      .replacingOccurrences(of: ":", with: "-")
+    let fileName =
+      "\(timestamp)-\(screenshotBaseName(for: decision))-\(sanitizedPathComponent(consequentialLabel))-\(sanitizedPathComponent(stage)).png"
+    let screenshotPath = (screenshotDirectory as NSString).appendingPathComponent(fileName)
+
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
+    process.arguments = ["-x", screenshotPath]
+    try process.run()
+    process.waitUntilExit()
+
+    if process.terminationStatus == 0 {
+      trace("Saved \(stage) screenshot for \(consequentialLabel): \(screenshotPath)")
+    } else {
+      trace("Failed to save \(stage) screenshot for \(consequentialLabel) (exit \(process.terminationStatus)).")
+    }
+  } catch {
+    trace("Failed to save \(stage) screenshot for \(consequentialLabel): \(error)")
+  }
 }
 
 func attr(_ element: AXUIElement, _ name: String) -> AnyObject? {
@@ -131,6 +201,7 @@ func appElement() throws -> AXUIElement {
   guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: "net.whatsapp.WhatsApp").first else {
     throw HookError.appNotRunning
   }
+  trace("Found running WhatsApp app and activating it.")
   app.activate()
   return AXUIElementCreateApplication(app.processIdentifier)
 }
@@ -204,6 +275,7 @@ func openChat(named chatName: String, appElement: AXUIElement) throws -> AXUIEle
     throw HookError.chatNotFound(chatName)
   }
 
+  trace("Opening chat '\(chatName)'.")
   _ = perform(chat, "AXPress")
   wait(seconds: 0.8)
   return try appWindow(appElement)
@@ -257,17 +329,27 @@ func findMessage(_ decision: ModerationDecision, in window: AXUIElement) throws 
       return descriptionText(left.element).count < descriptionText(right.element).count
     }
 
+  trace("Scanned \(candidates.count) visible text candidate(s) for the target message.")
   guard let best = ranked.first?.element else {
     throw HookError.messageNotFound(String(decision.text.prefix(80)))
   }
 
+  if let top = ranked.first {
+    trace("Selected message candidate with score \(top.score): \(traceSnippet(descriptionText(top.element)))")
+  }
   return best
 }
 
-func clickButton(containing labels: [String], in root: AXUIElement) throws {
+func clickButton(
+  containing labels: [String],
+  in root: AXUIElement,
+  decision: ModerationDecision? = nil,
+  consequentialLabel: String? = nil
+) throws {
   let normalizedLabels = labels.map(normalized)
   var buttons: [AXUIElement] = []
   findAll(root, where: { role($0) == "AXButton" }, into: &buttons)
+  trace("Found \(buttons.count) button candidate(s) while looking for confirmation: \(labels.joined(separator: ", ")).")
 
   guard let button = buttons.first(where: { element in
     let haystack = normalized(combinedText(element))
@@ -276,7 +358,15 @@ func clickButton(containing labels: [String], in root: AXUIElement) throws {
     throw HookError.buttonNotFound(labels)
   }
 
+  if let decision, let consequentialLabel {
+    captureActionScreenshot(stage: "before", consequentialLabel: consequentialLabel, decision: decision)
+  }
+  trace("Clicking confirmation button: \(traceSnippet(combinedText(button))).")
   _ = perform(button, "AXPress")
+  if let decision, let consequentialLabel {
+    wait(seconds: 0.3)
+    captureActionScreenshot(stage: "after", consequentialLabel: consequentialLabel, decision: decision)
+  }
 }
 
 func findMenuItems(in root: AXUIElement) -> [AXUIElement] {
@@ -288,9 +378,15 @@ func findMenuItems(in root: AXUIElement) -> [AXUIElement] {
   return menuItems
 }
 
-func clickMenuItem(containing labels: [String], in root: AXUIElement) throws {
+func clickMenuItem(
+  containing labels: [String],
+  in root: AXUIElement,
+  decision: ModerationDecision? = nil,
+  consequentialLabel: String? = nil
+) throws {
   let normalizedLabels = labels.map(normalized)
   let menuItems = findMenuItems(in: root)
+  trace("Found \(menuItems.count) menu item candidate(s) while looking for: \(labels.joined(separator: ", ")).")
 
   guard let menuItem = menuItems.first(where: { element in
     let haystack = normalized(combinedText(element))
@@ -299,32 +395,70 @@ func clickMenuItem(containing labels: [String], in root: AXUIElement) throws {
     throw HookError.menuItemNotFound(labels)
   }
 
+  if let decision, let consequentialLabel {
+    captureActionScreenshot(stage: "before", consequentialLabel: consequentialLabel, decision: decision)
+  }
+  trace("Clicking menu item: \(traceSnippet(combinedText(menuItem))).")
   _ = perform(menuItem, "AXPress")
+  if let decision, let consequentialLabel {
+    wait(seconds: 0.3)
+    captureActionScreenshot(stage: "after", consequentialLabel: consequentialLabel, decision: decision)
+  }
 }
 
-func chooseMenuItem(searchText: String, menuLabels: [String], confirmLabels: [String], appElement: AXUIElement) throws {
+func chooseMenuItem(
+  searchText: String,
+  menuLabels: [String],
+  confirmLabels: [String],
+  appElement: AXUIElement,
+  decision: ModerationDecision,
+  consequentialLabel: String,
+  requireConfirmation: Bool = false
+) throws {
   wait(seconds: 0.15)
 
   do {
-    try clickMenuItem(containing: menuLabels, in: appElement)
+    try clickMenuItem(
+      containing: menuLabels,
+      in: appElement,
+      decision: requireConfirmation ? nil : decision,
+      consequentialLabel: requireConfirmation ? nil : consequentialLabel
+    )
   } catch HookError.menuItemNotFound {
     let hasMenu = !findMenuItems(in: appElement).isEmpty
     guard hasMenu else {
       throw HookError.menuNotAvailable
     }
 
+    if !requireConfirmation {
+      captureActionScreenshot(stage: "before", consequentialLabel: consequentialLabel, decision: decision)
+    }
+    trace("Menu item not directly discoverable; typing '\(searchText)' into the open menu.")
     sendText(searchText)
     wait(seconds: 0.15)
+    trace("Pressing Return to choose the highlighted menu action.")
     sendKeyCode(36)
+    if !requireConfirmation {
+      wait(seconds: 0.3)
+      captureActionScreenshot(stage: "after", consequentialLabel: consequentialLabel, decision: decision)
+    }
   }
 
   wait(seconds: 0.8)
 
   do {
     let window = try appWindow(appElement)
-    try clickButton(containing: confirmLabels, in: window)
+    try clickButton(
+      containing: confirmLabels,
+      in: window,
+      decision: decision,
+      consequentialLabel: consequentialLabel
+    )
     wait(seconds: 0.5)
   } catch HookError.buttonNotFound {
+    if requireConfirmation {
+      throw HookError.buttonNotFound(confirmLabels)
+    }
     // Some actions complete immediately with no confirmation sheet.
   }
 }
@@ -347,12 +481,16 @@ func handleDeleteMessage(_ decision: ModerationDecision, appElement: AXUIElement
   guard perform(message, "AXShowMenu") == .success else {
     throw HookError.menuNotAvailable
   }
+  trace("Opened context menu for the matched message.")
   wait(seconds: 0.3)
   try chooseMenuItem(
     searchText: "delete",
-    menuLabels: ["Delete", "Delete Message", "Delete for everyone", "Delete for Everyone"],
-    confirmLabels: ["Delete", "Delete Message", "Delete for everyone", "Delete for Everyone"],
-    appElement: appElement
+    menuLabels: ["Delete", "Delete Message"],
+    confirmLabels: ["Delete for everyone", "Delete for Everyone"],
+    appElement: appElement,
+    decision: decision,
+    consequentialLabel: "delete-for-everyone",
+    requireConfirmation: true
   )
 }
 
@@ -362,12 +500,15 @@ func handleRemoveSender(_ decision: ModerationDecision, appElement: AXUIElement)
   guard perform(message, "AXShowMenu") == .success else {
     throw HookError.menuNotAvailable
   }
+  trace("Opened context menu for the matched message.")
   wait(seconds: 0.3)
   try chooseMenuItem(
     searchText: "remove",
     menuLabels: ["Remove", "Remove participant", "Remove from group", "Remove from community"],
     confirmLabels: ["Remove", "Remove participant", "Remove from group", "Remove from community", "OK"],
-    appElement: appElement
+    appElement: appElement,
+    decision: decision,
+    consequentialLabel: "remove-sender"
   )
 }
 

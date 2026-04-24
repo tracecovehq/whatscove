@@ -244,6 +244,24 @@ function renderModerationSummary(prefix: string, decisions: ModerationDecision[]
   );
 }
 
+function renderModerationTrace(prefix: string, decision: ModerationDecision): string {
+  const actionTone: MarkerTone = decision.status === "failed" ? "error" : "info";
+  const lines = [
+    renderStatusLine(
+      "TRACE",
+      prefix,
+      `${decision.action} ${decision.status}${decision.error ? `: ${decision.error}` : ""}`,
+      actionTone
+    )
+  ];
+
+  for (const traceLine of decision.uiTrace ?? []) {
+    lines.push(`       ${colorize("•", ANSI.dim)} ${traceLine}`);
+  }
+
+  return lines.join("\n");
+}
+
 function parseCliArgs(argv: string[]): ParsedArgs {
   const [firstArg, ...restArgs] = argv;
   const hasExplicitCommand =
@@ -485,6 +503,11 @@ async function main(): Promise<void> {
 
       if (result.moderationDecisions.length > 0) {
         console.log(renderModerationSummary(prefix, result.moderationDecisions));
+        for (const decision of result.moderationDecisions) {
+          if ((decision.uiTrace?.length ?? 0) > 0) {
+            console.log(renderModerationTrace(prefix, decision));
+          }
+        }
       }
     });
     return;

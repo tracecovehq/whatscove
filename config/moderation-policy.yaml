@@ -1,11 +1,21 @@
 version: 1
+# Master switch for moderation planning.
 enabled: true
+# detect = log only, queue = record actions without executing, apply = execute actions.
 mode: queue
+# Default actions to take for strong matches.
 actions:
   - delete_message
   - remove_sender
+# Keep false if you still want to see repeat spam after a failed moderation attempt.
 ignoreLocallyBannedUsers: false
+# When true, save before/after screenshots around destructive UI actions.
+captureActionScreenshots: true
+# Optional absolute path. Leave empty to use data/moderation-screenshots/.
+screenshotDirectory: ""
+# Optional external moderation hook. Leave empty to use the bundled Swift hook.
 hookCommand: ""
+# Optional per-rule action overrides.
 perRule:
   cedar-lantern-signal:
     actions:

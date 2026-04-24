@@ -172,6 +172,8 @@ export interface ModerationPolicy {
   mode: ModerationMode;
   actions: ModerationActionType[];
   ignoreLocallyBannedUsers: boolean;
+  captureActionScreenshots: boolean;
+  screenshotDirectory: string;
   hookCommand: string;
   perRule: Record<string, ModerationPolicyOverride>;
 }
@@ -192,6 +194,9 @@ export interface ModerationDecision {
   ruleLabel?: string;
   text: string;
   error?: string;
+  uiTrace?: string[];
+  captureActionScreenshots?: boolean;
+  screenshotDirectory?: string;
 }
 
 export interface ModerationState {

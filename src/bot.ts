@@ -354,6 +354,8 @@ export class WhatsAppSpamGuard {
         mode: "detect",
         actions: [],
         ignoreLocallyBannedUsers: false,
+        captureActionScreenshots: false,
+        screenshotDirectory: "",
         hookCommand: "",
         perRule: {}
       }

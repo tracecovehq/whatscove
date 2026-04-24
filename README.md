@@ -54,11 +54,31 @@ Modes:
 - `queue`: write moderation decisions to the queue without executing destructive actions
 - `apply`: invoke either a custom hook or the bundled WhatsApp Desktop hook for destructive actions
 
+Moderation policy toggles:
+
+- `enabled: true|false`
+  Turn moderation planning on or off entirely.
+- `mode: detect|queue|apply`
+  Switch between logging only, queuing, or real UI actions.
+- `actions:`
+  Turn default actions on or off by including or removing `delete_message`, `remove_sender`, or `notify`.
+- `ignoreLocallyBannedUsers: true|false`
+  Leave this `false` if you want moderators to keep seeing repeat spam after failures.
+- `captureActionScreenshots: true|false`
+  Turn before/after screenshots for destructive UI actions on or off.
+- `screenshotDirectory: "/absolute/path"`
+  Override where moderation screenshots are written. Leave empty to use [data/moderation-screenshots](/Users/jlukanta/Projects/tracecove/whatscove/data/moderation-screenshots).
+- `hookCommand: "..."|`
+  Set a custom moderation executor, or leave empty to use the bundled [whatsapp-hook.swift](/Users/jlukanta/Projects/tracecove/whatscove/src/whatsapp-hook.swift).
+- `perRule.<rule-id>.actions:`
+  Override default actions for one specific spam family.
+
 Moderation data files:
 
 - `data/moderation-queue.jsonl`: queued moderation actions waiting for a human or external executor
 - `data/moderation-events.jsonl`: audit log of moderation decisions
 - `data/moderation-state.json`: processed decision ids and any historical local ban state
+- `data/moderation-screenshots/`: optional before/after screenshots for consequential UI actions when enabled
 
 Important:
 
@@ -98,10 +118,22 @@ cd /Users/jlukanta/Projects/tracecove/whatscove
 node --experimental-strip-types ./src/cli.ts watch --poll-seconds 20 --weak-min-score 0.10
 ```
 
+Run a watcher with no weak testing output:
+
+```bash
+node --experimental-strip-types ./src/cli.ts watch --poll-seconds 20
+```
+
 Run with queued auto-moderation:
 
 ```bash
 node --experimental-strip-types ./src/cli.ts watch --poll-seconds 20 --moderation-mode queue
+```
+
+Run with real auto-moderation plus screenshot capture from the default moderation policy:
+
+```bash
+node --experimental-strip-types ./src/cli.ts watch --poll-seconds 20 --moderation-mode apply
 ```
 
 Run with apply mode and a custom moderation policy:
@@ -111,6 +143,15 @@ node --experimental-strip-types ./src/cli.ts watch \
   --poll-seconds 20 \
   --moderation-mode apply \
   --moderation-policy /absolute/path/to/moderation-policy.yaml
+```
+
+Test synthetic WhatsApp rows from a fixture file without touching the local WhatsApp database:
+
+```bash
+node --experimental-strip-types ./src/cli.ts fixture \
+  --fixture-file /absolute/path/to/test-fixture.json \
+  --weak-min-score 0.10 \
+  --no-notify
 ```
 
 Append a new spam rule from the terminal:
@@ -139,17 +180,56 @@ node --experimental-strip-types ./src/cli.ts add-rule \
 Useful flags:
 
 - `--min-score 0.80` makes the detector stricter.
+- `--min-score 0.60` makes the detector looser.
 - `--weak-min-score 0.10` prints low-confidence testing matches to the console and JSON output without triggering moderation.
+- Omit `--weak-min-score` entirely to turn weak testing output off.
+- `--weak-min-score 0` prints the full low-confidence/debug stream, including system-style rows.
 - `--no-notify` disables macOS notifications.
+- Omit `--no-notify` to keep notifications on.
 - `--json` prints the full scan result as JSON for automation.
 - `--chat "East Bay"` limits the scan to one community or group name.
 - `--lookback-hours 6` restricts the initial scan window.
+- `--poll-seconds 20` changes the watcher cadence; omit it to use the default 30 seconds.
 - `--rules /absolute/path/to/spam-rules.yaml` loads a custom dynamic rule list.
 - `--rules /absolute/path/to/spam-rules.json` also works for JSON rule files.
 - `--moderation-policy /absolute/path/to/moderation-policy.yaml` loads a moderation policy.
 - `--moderation-policy /absolute/path/to/moderation-policy.json` also works for JSON policy files.
 - `--moderation-mode detect|queue|apply` controls whether matches just log, queue, or execute moderation actions.
+- `fixture --fixture-file /absolute/path/to/file.json` runs the detector against a JSON fixture instead of the live WhatsApp database.
 - `add-rule --label ... --template ...` appends a new rule without hand-editing JSON.
+
+## Fixture Testing
+
+The `fixture` command is useful when you want to test:
+
+- split spam text across `text`, `previewTitle`, `previewSummary`, and preview content fields
+- CTA links and preview behavior
+- weak vs strong matching without sending anything through WhatsApp
+
+Accepted fixture shapes:
+
+- one message row object
+- an array of message row objects
+- a snapshot-like object with `messages: [...]`
+
+Minimal example:
+
+```json
+{
+  "messages": [
+    {
+      "chatName": "Fixture Community",
+      "messageType": 0,
+      "text": "TEST ONLY: detector exercise with CTA link.\nhttps://example.test/wa-preview",
+      "previewTitle": "TEST ONLY - US stock knowledge group",
+      "previewSummary": "Group chat invite",
+      "previewContent1": "TEST ONLY - latest information of various stocks, information for free, welcome to join"
+    }
+  ]
+}
+```
+
+The fixture path only reads your JSON file and evaluates it in memory. It does not read or modify WhatsApp Desktop's `ChatStorage.sqlite`.
 
 ## Notes
 

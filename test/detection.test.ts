@@ -24,7 +24,10 @@ import {
   planModerationDecisions,
   shouldRetryModerationError
 } from "../src/moderation.ts";
-import { loadModerationPolicy } from "../src/moderation-policy.ts";
+import {
+  DEFAULT_MODERATION_SCREENSHOT_DIR,
+  loadModerationPolicy
+} from "../src/moderation-policy.ts";
 import { appendSpamRule, buildSpamRule, loadSpamRules } from "../src/spam-rules.ts";
 import type {
   MessageSnapshot,
@@ -734,6 +737,8 @@ test("loadModerationPolicy loads the default moderation config", async () => {
   assert.equal(policy.mode, "queue");
   assert.deepEqual(policy.actions, ["delete_message", "remove_sender"]);
   assert.equal(policy.ignoreLocallyBannedUsers, false);
+  assert.equal(policy.captureActionScreenshots, true);
+  assert.equal(policy.screenshotDirectory, DEFAULT_MODERATION_SCREENSHOT_DIR);
 });
 
 test("loadModerationPolicy reads a YAML moderation config", async () => {
@@ -749,6 +754,8 @@ test("loadModerationPolicy reads a YAML moderation config", async () => {
       "actions:",
       "  - notify",
       "ignoreLocallyBannedUsers: true",
+      "captureActionScreenshots: false",
+      "screenshotDirectory: /tmp/mod-shots",
       "hookCommand: echo moderation",
       "perRule:",
       "  cedar-lantern-signal:",
@@ -761,6 +768,8 @@ test("loadModerationPolicy reads a YAML moderation config", async () => {
   assert.equal(policy.policyPath, policyPath);
   assert.equal(policy.mode, "apply");
   assert.deepEqual(policy.actions, ["notify"]);
+  assert.equal(policy.captureActionScreenshots, false);
+  assert.equal(policy.screenshotDirectory, "/tmp/mod-shots");
 });
 
 test("planModerationDecisions creates queued actions for real spam matches", () => {
@@ -770,6 +779,8 @@ test("planModerationDecisions creates queued actions for real spam matches", () 
     mode: "queue",
     actions: ["delete_message", "remove_sender"],
     ignoreLocallyBannedUsers: false,
+    captureActionScreenshots: false,
+    screenshotDirectory: "",
     hookCommand: "",
     perRule: {}
   };
@@ -809,6 +820,8 @@ test("getActionsForMatch applies per-rule moderation overrides", () => {
     mode: "queue",
     actions: ["delete_message", "remove_sender"],
     ignoreLocallyBannedUsers: true,
+    captureActionScreenshots: false,
+    screenshotDirectory: "",
     hookCommand: "",
     perRule: {
       "cedar-lantern-signal": {

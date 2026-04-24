@@ -13,6 +13,11 @@ export const DEFAULT_MODERATION_POLICY_BASE_PATH = path.join(
   "config",
   "moderation-policy"
 );
+export const DEFAULT_MODERATION_SCREENSHOT_DIR = path.join(
+  PACKAGE_ROOT,
+  "data",
+  "moderation-screenshots"
+);
 
 const VALID_ACTIONS: ModerationActionType[] = [
   "delete_message",
@@ -75,6 +80,11 @@ export async function loadModerationPolicy(
         : "queue",
     actions: defaultActions,
     ignoreLocallyBannedUsers: parsed.ignoreLocallyBannedUsers === true,
+    captureActionScreenshots: parsed.captureActionScreenshots === true,
+    screenshotDirectory:
+      typeof parsed.screenshotDirectory === "string" && parsed.screenshotDirectory.trim()
+        ? parsed.screenshotDirectory.trim()
+        : DEFAULT_MODERATION_SCREENSHOT_DIR,
     hookCommand: typeof parsed.hookCommand === "string" ? parsed.hookCommand.trim() : "",
     perRule
   };

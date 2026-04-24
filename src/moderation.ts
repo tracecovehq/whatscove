@@ -37,6 +37,11 @@ const RETRYABLE_DELETE_ERROR_PATTERNS = [
   "Could not open the WhatsApp moderation menu",
   "Could not find any moderation menu item matching"
 ];
+const HOOK_TRACE_PREFIX = "TRACE: ";
+
+type HookRunResult = {
+  uiTrace: string[];
+};
 
 function buildDecisionId(match: SuspiciousMatch, action: ModerationActionType): string {
   return createHash("sha1")
@@ -95,7 +100,9 @@ export function planModerationDecisions(
         messagePk: match.messagePk,
         ruleId: match.ruleId,
         ruleLabel: match.ruleLabel,
-        text: match.text
+        text: match.text,
+        captureActionScreenshots: policy.captureActionScreenshots,
+        screenshotDirectory: policy.screenshotDirectory
       });
     }
   }
@@ -130,14 +137,19 @@ async function runProcess(
   command: string,
   args: string[],
   decision: ModerationDecision
-): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
+): Promise<HookRunResult> {
+  return await new Promise<HookRunResult>((resolve, reject) => {
     const child = spawn(command, args, {
       shell: false,
       env: getBundledHookEnvironment(),
       stdio: ["pipe", "pipe", "pipe"]
     });
+    let stdout = "";
     let stderr = "";
+
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString();
+    });
 
     child.stderr.on("data", (chunk) => {
       stderr += chunk.toString();
@@ -145,8 +157,15 @@ async function runProcess(
 
     child.on("error", reject);
     child.on("close", (code, signal) => {
+      const uiTrace = stdout
+        .split("\n")
+        .map((line) => line.trimEnd())
+        .filter(Boolean)
+        .map((line) =>
+          line.startsWith(HOOK_TRACE_PREFIX) ? line.slice(HOOK_TRACE_PREFIX.length) : line
+        );
       if (code === 0) {
-        resolve();
+        resolve({ uiTrace });
         return;
       }
 
@@ -155,9 +174,9 @@ async function runProcess(
           ? `Moderation hook was terminated by signal ${signal}. This often happens when the macOS GUI session is unavailable, such as while the Mac is locked or asleep.`
           : `Moderation hook exited with non-zero status ${String(code)}`;
       reject(
-        new Error(
-          stderr.trim() || terminationDetail
-        )
+        Object.assign(new Error(stderr.trim() || terminationDetail), {
+          uiTrace
+        })
       );
     });
 
@@ -197,14 +216,22 @@ export async function preflightBundledModerationHook(policy: ModerationPolicy): 
   }
 }
 
-async function runHook(policy: ModerationPolicy, decision: ModerationDecision): Promise<void> {
+async function runHook(
+  policy: ModerationPolicy,
+  decision: ModerationDecision
+): Promise<HookRunResult> {
   if (policy.hookCommand) {
-    await new Promise<void>((resolve, reject) => {
+    return await new Promise<HookRunResult>((resolve, reject) => {
       const child = spawn(policy.hookCommand, {
         shell: true,
         stdio: ["pipe", "pipe", "pipe"]
       });
+      let stdout = "";
       let stderr = "";
+
+      child.stdout.on("data", (chunk) => {
+        stdout += chunk.toString();
+      });
 
       child.stderr.on("data", (chunk) => {
         stderr += chunk.toString();
@@ -212,13 +239,23 @@ async function runHook(policy: ModerationPolicy, decision: ModerationDecision): 
 
       child.on("error", reject);
       child.on("close", (code) => {
+        const uiTrace = stdout
+          .split("\n")
+          .map((line) => line.trimEnd())
+          .filter(Boolean)
+          .map((line) =>
+            line.startsWith(HOOK_TRACE_PREFIX) ? line.slice(HOOK_TRACE_PREFIX.length) : line
+          );
         if (code === 0) {
-          resolve();
+          resolve({ uiTrace });
           return;
         }
         reject(
-          new Error(
-            stderr.trim() || `Moderation hook exited with non-zero status ${String(code)}`
+          Object.assign(
+            new Error(
+              stderr.trim() || `Moderation hook exited with non-zero status ${String(code)}`
+            ),
+            { uiTrace }
           )
         );
       });
@@ -226,11 +263,10 @@ async function runHook(policy: ModerationPolicy, decision: ModerationDecision): 
       child.stdin.write(JSON.stringify(decision));
       child.stdin.end();
     });
-    return;
   }
 
   const bundled = getBundledHookCommand();
-  await runProcess(bundled.command, bundled.args, decision);
+  return await runProcess(bundled.command, bundled.args, decision);
 }
 
 export function shouldRetryModerationError(
@@ -248,30 +284,40 @@ async function applyDecision(
   policy: ModerationPolicy,
   state: ModerationState,
   decision: ModerationDecision
-): Promise<void> {
+): Promise<HookRunResult> {
   if (decision.action === "ban_sender_local") {
     applyLocalSideEffects(state, decision);
-    return;
+    return { uiTrace: ["Applied local side effect ban_sender_local."] };
   }
 
-  await runHook(policy, decision);
+  return await runHook(policy, decision);
 }
 
 async function applyDecisionWithRetry(
   policy: ModerationPolicy,
   state: ModerationState,
   decision: ModerationDecision
-): Promise<{ status: "applied" | "failed"; error?: string }> {
+): Promise<{ status: "applied" | "failed"; error?: string; uiTrace: string[] }> {
   let lastError = "";
   let attemptsUsed = 0;
+  const uiTrace: string[] = [];
 
   for (let attempt = 1; attempt <= MODERATION_MAX_ATTEMPTS; attempt += 1) {
     attemptsUsed = attempt;
     try {
-      await applyDecision(policy, state, decision);
-      return { status: "applied" };
+      if (attempt > 1) {
+        uiTrace.push(`Retry attempt ${attempt}/${MODERATION_MAX_ATTEMPTS}.`);
+      }
+      const result = await applyDecision(policy, state, decision);
+      uiTrace.push(...result.uiTrace);
+      return { status: "applied", uiTrace };
     } catch (error) {
       lastError = error instanceof Error ? error.message : String(error);
+      const attemptTrace = Array.isArray((error as { uiTrace?: unknown }).uiTrace)
+        ? ((error as { uiTrace: string[] }).uiTrace)
+        : [];
+      uiTrace.push(...attemptTrace);
+      uiTrace.push(`Attempt ${attempt} failed: ${lastError}`);
       const hasAttemptsRemaining = attempt < MODERATION_MAX_ATTEMPTS;
       if (!hasAttemptsRemaining || !shouldRetryModerationError(decision, lastError)) {
         break;
@@ -284,6 +330,7 @@ async function applyDecisionWithRetry(
 
   return {
     status: "failed",
+    uiTrace,
     error:
       attemptsUsed > 1
         ? `${lastError} (after ${attemptsUsed} attempts)`
@@ -326,6 +373,7 @@ export async function handleModeration(
     for (const decision of decisions) {
       const result = await applyDecisionWithRetry(policy, state, decision);
       decision.status = result.status;
+      decision.uiTrace = result.uiTrace;
       if (result.error) {
         decision.error = result.error;
       }
