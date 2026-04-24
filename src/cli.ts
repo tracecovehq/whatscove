@@ -9,7 +9,7 @@ import {
 import { preflightBundledModerationHook } from "./moderation.ts";
 import { loadModerationPolicy } from "./moderation-policy.ts";
 import { appendSpamRule, loadSpamRules } from "./spam-rules.ts";
-import type { ModerationDecision } from "./types.ts";
+import type { ModerationDecision, SuspiciousMatch } from "./types.ts";
 
 type CliCommand = "scan" | "watch" | "add-rule";
 
@@ -69,6 +69,31 @@ function parseModerationMode(
 function formatModerationDecision(decision: ModerationDecision): string {
   const error = decision.error ? ` (${decision.error})` : "";
   return `${decision.action}:${decision.status}${error}`;
+}
+
+type WatchStreamEntry = {
+  kind: "suspicious" | "weak";
+  match: SuspiciousMatch;
+};
+
+function compareWatchStreamEntries(left: WatchStreamEntry, right: WatchStreamEntry): number {
+  const leftTime = left.match.messageTimeLocal || "";
+  const rightTime = right.match.messageTimeLocal || "";
+  if (leftTime !== rightTime) {
+    return leftTime.localeCompare(rightTime);
+  }
+
+  return left.match.messagePk - right.match.messagePk;
+}
+
+function buildChronologicalWatchStream(
+  freshMatches: SuspiciousMatch[],
+  freshWeakMatches: SuspiciousMatch[]
+): WatchStreamEntry[] {
+  return [
+    ...freshMatches.map((match) => ({ kind: "suspicious" as const, match })),
+    ...freshWeakMatches.map((match) => ({ kind: "weak" as const, match }))
+  ].sort(compareWatchStreamEntries);
 }
 
 function parseCliArgs(argv: string[]): ParsedArgs {
@@ -208,22 +233,26 @@ async function main(): Promise<void> {
       const prefix = `[${new Date().toISOString()}]`;
       const chronologicalFreshMatches = sortMatchesChronologically(result.freshMatches);
       const chronologicalFreshWeakMatches = sortMatchesChronologically(result.freshWeakMatches);
+      const watchStream = buildChronologicalWatchStream(
+        chronologicalFreshMatches,
+        chronologicalFreshWeakMatches
+      );
 
-      if (chronologicalFreshMatches.length === 0 && chronologicalFreshWeakMatches.length === 0) {
+      if (watchStream.length === 0) {
         console.log(`${prefix} scan complete, no new spam-rule matches.`);
         return;
       }
 
-      console.log(`${prefix} ${chronologicalFreshMatches.length} new suspicious message(s):`);
-      for (const match of chronologicalFreshMatches) {
-        console.log(formatScanOutput({ matches: [match] }));
-      }
-
-      if (chronologicalFreshWeakMatches.length > 0) {
-        console.log(`${prefix} ${chronologicalFreshWeakMatches.length} weak testing match(es):`);
-        for (const match of chronologicalFreshWeakMatches) {
-          console.log(formatWeakScanOutput({ weakMatches: [match] }));
+      console.log(
+        `${prefix} ${watchStream.length} new log entr${watchStream.length === 1 ? "y" : "ies"}:`
+      );
+      for (const entry of watchStream) {
+        if (entry.kind === "suspicious") {
+          console.log(formatScanOutput({ matches: [entry.match] }));
+          continue;
         }
+
+        console.log(formatWeakScanOutput({ weakMatches: [entry.match] }));
       }
 
       if (result.moderationDecisions.length > 0) {
