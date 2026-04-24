@@ -178,10 +178,14 @@ function renderWatchEntry(entry: WatchStreamEntry): string {
     entry.kind === "suspicious"
       ? formatScanOutput({ matches: [entry.match] })
       : formatWeakScanOutput({ weakMatches: [entry.match] });
-  const config = styleConfig(classifyWatchEntry(entry));
+  const style = classifyWatchEntry(entry);
+  const config = styleConfig(style);
   const lines = raw.split("\n");
 
   if (lines.length > 0) {
+    if (style === "system") {
+      lines[0] = lines[0].replace(/^Weak testing match\b/, "System message");
+    }
     lines[0] = `${colorize(config.indicator, ...config.titleCodes)} ${colorize(lines[0], ...config.titleCodes)}`;
   }
 
