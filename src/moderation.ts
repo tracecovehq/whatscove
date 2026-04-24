@@ -30,6 +30,13 @@ const BUNDLED_HOOK_ENV_OVERRIDES = [
   "SWIFT_INCLUDE_PATH",
   "SWIFT_LIBRARY_PATH"
 ];
+const MODERATION_MAX_ATTEMPTS = 3;
+const MODERATION_RETRY_DELAYS_MS = [500, 1500];
+const RETRYABLE_DELETE_ERROR_PATTERNS = [
+  "Could not find a visible message matching",
+  "Could not open the WhatsApp moderation menu",
+  "Could not find any moderation menu item matching"
+];
 
 function buildDecisionId(match: SuspiciousMatch, action: ModerationActionType): string {
   return createHash("sha1")
@@ -111,6 +118,12 @@ export function getBundledHookEnvironment(
     delete env[key];
   }
   return env;
+}
+
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
 }
 
 async function runProcess(
@@ -220,6 +233,64 @@ async function runHook(policy: ModerationPolicy, decision: ModerationDecision): 
   await runProcess(bundled.command, bundled.args, decision);
 }
 
+export function shouldRetryModerationError(
+  decision: ModerationDecision,
+  error: string
+): boolean {
+  if (decision.action !== "delete_message") {
+    return false;
+  }
+
+  return RETRYABLE_DELETE_ERROR_PATTERNS.some((pattern) => error.includes(pattern));
+}
+
+async function applyDecision(
+  policy: ModerationPolicy,
+  state: ModerationState,
+  decision: ModerationDecision
+): Promise<void> {
+  if (decision.action === "ban_sender_local") {
+    applyLocalSideEffects(state, decision);
+    return;
+  }
+
+  await runHook(policy, decision);
+}
+
+async function applyDecisionWithRetry(
+  policy: ModerationPolicy,
+  state: ModerationState,
+  decision: ModerationDecision
+): Promise<{ status: "applied" | "failed"; error?: string }> {
+  let lastError = "";
+  let attemptsUsed = 0;
+
+  for (let attempt = 1; attempt <= MODERATION_MAX_ATTEMPTS; attempt += 1) {
+    attemptsUsed = attempt;
+    try {
+      await applyDecision(policy, state, decision);
+      return { status: "applied" };
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : String(error);
+      const hasAttemptsRemaining = attempt < MODERATION_MAX_ATTEMPTS;
+      if (!hasAttemptsRemaining || !shouldRetryModerationError(decision, lastError)) {
+        break;
+      }
+
+      const delayMs = MODERATION_RETRY_DELAYS_MS[attempt - 1] ?? MODERATION_RETRY_DELAYS_MS.at(-1) ?? 0;
+      await wait(delayMs);
+    }
+  }
+
+  return {
+    status: "failed",
+    error:
+      attemptsUsed > 1
+        ? `${lastError} (after ${attemptsUsed} attempts)`
+        : lastError
+  };
+}
+
 function applyLocalSideEffects(state: ModerationState, decision: ModerationDecision): void {
   if (
     decision.action === "ban_sender_local" &&
@@ -253,16 +324,10 @@ export async function handleModeration(
   if (policy.mode === "apply") {
     const completed: ModerationDecision[] = [];
     for (const decision of decisions) {
-      try {
-        if (decision.action === "ban_sender_local") {
-          applyLocalSideEffects(state, decision);
-        } else {
-          await runHook(policy, decision);
-        }
-        decision.status = "applied";
-      } catch (error) {
-        decision.status = "failed";
-        decision.error = error instanceof Error ? error.message : String(error);
+      const result = await applyDecisionWithRetry(policy, state, decision);
+      decision.status = result.status;
+      if (result.error) {
+        decision.error = result.error;
       }
       if (decision.status === "applied") {
         state.processedDecisionIds.push(decision.id);

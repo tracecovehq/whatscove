@@ -20,11 +20,18 @@ import {
   getActionsForMatch,
   getBundledHookCommand,
   getBundledHookEnvironment,
-  planModerationDecisions
+  planModerationDecisions,
+  shouldRetryModerationError
 } from "../src/moderation.ts";
 import { loadModerationPolicy } from "../src/moderation-policy.ts";
 import { appendSpamRule, buildSpamRule, loadSpamRules } from "../src/spam-rules.ts";
-import type { MessageSnapshot, ModerationPolicy, SpamRule, SuspiciousMatch } from "../src/types.ts";
+import type {
+  MessageSnapshot,
+  ModerationDecision,
+  ModerationPolicy,
+  SpamRule,
+  SuspiciousMatch
+} from "../src/types.ts";
 
 const STOCK_SPAM_TEMPLATE =
   "This is a group for sharing US stock knowledge and information for free. Here, you can view the latest information of various stocks. In order to avoid investment risks and obtain greater returns, you can also learn about the real US stock investment market information here. At the same time, you can also learn more rich investment experience and skills in the group. If you are investing in US stocks, or you are a US stock enthusiast, welcome to join this group";
@@ -785,4 +792,49 @@ test("getBundledHookEnvironment removes Nix SDK overrides for Apple Swift", () =
   assert.equal(env.SDKROOT, undefined);
   assert.equal(env.NIX_CFLAGS_COMPILE, undefined);
   assert.equal(env.LIBRARY_PATH, undefined);
+});
+
+test("shouldRetryModerationError retries flaky delete-message UI lookup failures", () => {
+  const decision = {
+    action: "delete_message"
+  } as ModerationDecision;
+
+  assert.equal(
+    shouldRetryModerationError(
+      decision,
+      "Could not find a visible message matching 'spam snippet'."
+    ),
+    true
+  );
+  assert.equal(
+    shouldRetryModerationError(
+      decision,
+      "Could not open the WhatsApp moderation menu for the matched message."
+    ),
+    true
+  );
+  assert.equal(
+    shouldRetryModerationError(
+      decision,
+      "Could not find any moderation menu item matching: Delete."
+    ),
+    true
+  );
+});
+
+test("shouldRetryModerationError does not retry unrelated or non-delete failures", () => {
+  assert.equal(
+    shouldRetryModerationError(
+      { action: "remove_sender" } as ModerationDecision,
+      "Could not find a visible message matching 'spam snippet'."
+    ),
+    false
+  );
+  assert.equal(
+    shouldRetryModerationError(
+      { action: "delete_message" } as ModerationDecision,
+      "Accessibility permission is required for WhatsCove moderation actions."
+    ),
+    false
+  );
 });
