@@ -23,9 +23,18 @@ async function ensureDataDir(): Promise<void> {
 }
 
 async function loadLatestFailedDecisionIds(): Promise<Set<string>> {
+  const latestEvents = await loadLatestModerationEventsByDecisionId();
+  return new Set(
+    [...latestEvents.values()]
+      .filter((event) => event.status === "failed")
+      .map((event) => event.id)
+  );
+}
+
+async function loadLatestModerationEventsByDecisionId(): Promise<Map<string, ModerationDecision>> {
   try {
     const raw = await readFile(MODERATION_EVENTS_PATH, "utf8");
-    const statuses = new Map<string, ModerationDecision["status"]>();
+    const latestEvents = new Map<string, ModerationDecision>();
 
     for (const line of raw.split("\n")) {
       if (!line.trim()) {
@@ -34,23 +43,32 @@ async function loadLatestFailedDecisionIds(): Promise<Set<string>> {
 
       try {
         const event = JSON.parse(line) as Partial<ModerationDecision>;
-        if (typeof event.id === "string" && typeof event.status === "string") {
-          statuses.set(event.id, event.status as ModerationDecision["status"]);
+        if (
+          typeof event.id === "string" &&
+          typeof event.status === "string" &&
+          typeof event.action === "string" &&
+          typeof event.matchFingerprint === "string" &&
+          typeof event.chatName === "string" &&
+          typeof event.chatJid === "string" &&
+          typeof event.senderName === "string" &&
+          typeof event.fromJid === "string" &&
+          typeof event.messageTimeLocal === "string" &&
+          typeof event.messagePk === "number" &&
+          typeof event.text === "string" &&
+          typeof event.createdAt === "string"
+        ) {
+          latestEvents.set(event.id, event as ModerationDecision);
         }
       } catch {
         // Ignore malformed historical log lines; the append-only log is diagnostic.
       }
     }
 
-    return new Set(
-      [...statuses.entries()]
-        .filter(([, status]) => status === "failed")
-        .map(([id]) => id)
-    );
+    return latestEvents;
   } catch (error) {
     const fileError = error as NodeJS.ErrnoException;
     if (fileError.code === "ENOENT") {
-      return new Set();
+      return new Map();
     }
     throw error;
   }
@@ -102,4 +120,24 @@ export async function appendModerationEvents(events: ModerationDecision[]): Prom
   }
   await ensureDataDir();
   await appendFile(MODERATION_EVENTS_PATH, `${events.map((e) => JSON.stringify(e)).join("\n")}\n`);
+}
+
+export async function loadPendingFailedModerationDecisions(
+  lookbackHours: number
+): Promise<ModerationDecision[]> {
+  const latestEvents = await loadLatestModerationEventsByDecisionId();
+  const cutoffTime = Date.now() - lookbackHours * 60 * 60 * 1000;
+  return [...latestEvents.values()]
+    .filter(
+      (decision) =>
+        decision.status === "failed" &&
+        decision.action !== "notify" &&
+        Number.isFinite(Date.parse(decision.createdAt)) &&
+        Date.parse(decision.createdAt) >= cutoffTime
+    )
+    .map((decision) => ({
+      ...decision,
+      status: "pending_apply",
+      resumedFromFailure: true
+    }));
 }

@@ -21,6 +21,7 @@ import {
   getActionsForMatch,
   getBundledHookCommand,
   getBundledHookEnvironment,
+  mergeModerationDecisions,
   planModerationDecisions,
   shouldRetryModerationError
 } from "../src/moderation.ts";
@@ -259,6 +260,53 @@ test("fixture snapshots can simulate split-field WhatsApp invite spam safely", a
   assert.equal(result.matches[0]?.ruleId, "us-stock-group-invite");
   assert.ok((result.matches[0]?.score ?? 0) >= 0.5);
   assert.match(result.matches[0]?.text ?? "", /TEST ONLY - US stock knowledge group/);
+});
+
+test("identical spam resends get distinct fingerprints per message instance", async () => {
+  const text =
+    "This is a group for sharing US stock knowledge and information for free. Here, you can view the latest information of various stocks. In order to avoid investment risks and obtain greater returns, you can also learn about the real US stock investment market information here. At the same time, you can also learn more rich investment experience and skills in the group. If you are investing in US stocks, or you are a US stock enthusiast, welcome to join this group\n\nhttps://chat.whatsapp.com/BDcmXzyl8k17STFbjt3ruZ";
+
+  const snapshot: MessageSnapshot = {
+    databasePath: "/tmp/ChatStorage.sqlite",
+    fetchedAt: "2026-04-24T00:00:00.000Z",
+    messages: [
+      {
+        messagePk: 8516,
+        messageTimeUtc: "2026-04-24T21:46:07.000Z",
+        messageTimeLocal: "2026-04-24 14:46:07",
+        chatName: "Testing-2",
+        chatJid: "120363424557397899@g.us",
+        fromJid: "120363424557397899@g.us",
+        senderName: "+EAA=",
+        messageType: 7,
+        text,
+        previewTitle: null,
+        previewSummary: null,
+        previewContent1: null,
+        previewContent2: null
+      },
+      {
+        messagePk: 8506,
+        messageTimeUtc: "2026-04-24T20:33:37.000Z",
+        messageTimeLocal: "2026-04-24 13:33:37",
+        chatName: "Testing-2",
+        chatJid: "120363424557397899@g.us",
+        fromJid: "120363424557397899@g.us",
+        senderName: "+EAA=",
+        messageType: 7,
+        text,
+        previewTitle: null,
+        previewSummary: null,
+        previewContent1: null,
+        previewContent2: null
+      }
+    ]
+  };
+
+  const result = await findSuspiciousEntries(snapshot);
+
+  assert.equal(result.matches.length, 2);
+  assert.notEqual(result.matches[0]?.fingerprint, result.matches[1]?.fingerprint);
 });
 
 test("default rules detect the longer blue harbor spam-like phrase", async () => {
@@ -738,6 +786,8 @@ test("loadModerationPolicy loads the default moderation config", async () => {
   assert.deepEqual(policy.actions, ["delete_message", "remove_sender"]);
   assert.equal(policy.ignoreLocallyBannedUsers, false);
   assert.equal(policy.skipAdminSenders, true);
+  assert.equal(policy.retryFailedActions, false);
+  assert.equal(policy.retryFailedActionsLookbackHours, 24);
   assert.equal(policy.captureActionScreenshots, true);
   assert.equal(policy.screenshotDirectory, DEFAULT_MODERATION_SCREENSHOT_DIR);
 });
@@ -756,6 +806,8 @@ test("loadModerationPolicy reads a YAML moderation config", async () => {
       "  - notify",
       "ignoreLocallyBannedUsers: true",
       "skipAdminSenders: false",
+      "retryFailedActions: true",
+      "retryFailedActionsLookbackHours: 6",
       "captureActionScreenshots: false",
       "screenshotDirectory: /tmp/mod-shots",
       "hookCommand: echo moderation",
@@ -771,6 +823,8 @@ test("loadModerationPolicy reads a YAML moderation config", async () => {
   assert.equal(policy.mode, "apply");
   assert.deepEqual(policy.actions, ["notify"]);
   assert.equal(policy.skipAdminSenders, false);
+  assert.equal(policy.retryFailedActions, true);
+  assert.equal(policy.retryFailedActionsLookbackHours, 6);
   assert.equal(policy.captureActionScreenshots, false);
   assert.equal(policy.screenshotDirectory, "/tmp/mod-shots");
 });
@@ -783,6 +837,8 @@ test("planModerationDecisions creates queued actions for real spam matches", () 
     actions: ["delete_message", "remove_sender"],
     ignoreLocallyBannedUsers: false,
     skipAdminSenders: true,
+    retryFailedActions: false,
+    retryFailedActionsLookbackHours: 24,
     captureActionScreenshots: false,
     screenshotDirectory: "",
     hookCommand: "",
@@ -825,6 +881,8 @@ test("planModerationDecisions skips moderation actions for admin senders", () =>
     actions: ["delete_message", "remove_sender"],
     ignoreLocallyBannedUsers: false,
     skipAdminSenders: true,
+    retryFailedActions: false,
+    retryFailedActionsLookbackHours: 24,
     captureActionScreenshots: false,
     screenshotDirectory: "",
     hookCommand: "",
@@ -863,6 +921,8 @@ test("planModerationDecisions can allow admin senders when skipAdminSenders is f
     actions: ["delete_message", "remove_sender"],
     ignoreLocallyBannedUsers: false,
     skipAdminSenders: false,
+    retryFailedActions: false,
+    retryFailedActionsLookbackHours: 24,
     captureActionScreenshots: false,
     screenshotDirectory: "",
     hookCommand: "",
@@ -896,6 +956,57 @@ test("planModerationDecisions can allow admin senders when skipAdminSenders is f
   );
 });
 
+test("mergeModerationDecisions resumes failed actions without duplicating fresh planned actions", () => {
+  const resumedRemove: ModerationDecision = {
+    id: "resume-remove",
+    createdAt: "2026-04-24T10:00:00.000Z",
+    status: "pending_apply",
+    resumedFromFailure: true,
+    action: "remove_sender",
+    matchFingerprint: "fingerprint-1",
+    chatName: "Testing-2",
+    chatJid: "1203634@g.us",
+    senderName: "Vera Lukman",
+    fromJid: "192156903981242@lid",
+    messageTimeLocal: "2026-04-24 10:00:00",
+    messagePk: 42,
+    text: "spam"
+  };
+  const freshDelete: ModerationDecision = {
+    id: "fresh-delete",
+    createdAt: "2026-04-24T10:01:00.000Z",
+    status: "pending_apply",
+    action: "delete_message",
+    matchFingerprint: "fingerprint-2",
+    chatName: "Testing-2",
+    chatJid: "1203634@g.us",
+    senderName: "Spammer",
+    fromJid: "200@s.whatsapp.net",
+    messageTimeLocal: "2026-04-24 10:01:00",
+    messagePk: 43,
+    text: "new spam"
+  };
+  const freshRetryOfSameRemove: ModerationDecision = {
+    ...resumedRemove,
+    createdAt: "2026-04-24T10:02:00.000Z",
+    resumedFromFailure: false
+  };
+
+  const merged = mergeModerationDecisions(
+    [freshDelete, freshRetryOfSameRemove],
+    [resumedRemove]
+  );
+
+  assert.deepEqual(
+    merged.map((decision) => decision.id),
+    ["fresh-delete", "resume-remove"]
+  );
+  assert.equal(
+    merged.find((decision) => decision.id === "resume-remove")?.resumedFromFailure,
+    false
+  );
+});
+
 test("getActionsForMatch applies per-rule moderation overrides", () => {
   const policy: ModerationPolicy = {
     policyPath: "/tmp/mod.json",
@@ -904,6 +1015,8 @@ test("getActionsForMatch applies per-rule moderation overrides", () => {
     actions: ["delete_message", "remove_sender"],
     ignoreLocallyBannedUsers: true,
     skipAdminSenders: true,
+    retryFailedActions: false,
+    retryFailedActionsLookbackHours: 24,
     captureActionScreenshots: false,
     screenshotDirectory: "",
     hookCommand: "",

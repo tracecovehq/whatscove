@@ -5,6 +5,7 @@ import path from "node:path";
 import {
   appendModerationEvents,
   appendModerationQueue,
+  loadPendingFailedModerationDecisions,
   loadModerationState,
   saveModerationState
 } from "./moderation-state.ts";
@@ -112,6 +113,23 @@ export function planModerationDecisions(
   }
 
   return decisions;
+}
+
+export function mergeModerationDecisions(
+  planned: ModerationDecision[],
+  resumable: ModerationDecision[]
+): ModerationDecision[] {
+  const merged = new Map<string, ModerationDecision>();
+
+  for (const decision of resumable) {
+    merged.set(decision.id, decision);
+  }
+
+  for (const decision of planned) {
+    merged.set(decision.id, decision);
+  }
+
+  return [...merged.values()].sort((left, right) => left.createdAt.localeCompare(right.createdAt));
 }
 
 export function getBundledHookCommand(): { command: string; args: string[] } {
@@ -358,7 +376,12 @@ export async function handleModeration(
   policy: ModerationPolicy
 ): Promise<ModerationDecision[]> {
   const state = await loadModerationState();
-  const decisions = planModerationDecisions(matches, policy, state);
+  const plannedDecisions = planModerationDecisions(matches, policy, state);
+  const resumableDecisions =
+    policy.mode === "apply" && policy.retryFailedActions
+      ? await loadPendingFailedModerationDecisions(policy.retryFailedActionsLookbackHours)
+      : [];
+  const decisions = mergeModerationDecisions(plannedDecisions, resumableDecisions);
 
   if (decisions.length === 0) {
     return [];
@@ -377,7 +400,9 @@ export async function handleModeration(
     for (const decision of decisions) {
       const result = await applyDecisionWithRetry(policy, state, decision);
       decision.status = result.status;
-      decision.uiTrace = result.uiTrace;
+      decision.uiTrace = decision.resumedFromFailure
+        ? ["Resuming previously failed moderation action from event log.", ...result.uiTrace]
+        : result.uiTrace;
       if (result.error) {
         decision.error = result.error;
       }

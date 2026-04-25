@@ -25,6 +25,7 @@ enum HookError: Error, CustomStringConvertible {
   case menuItemNotFound([String])
   case menuItemDidNotActivate([String])
   case buttonNotFound([String])
+  case unsafeTarget(String)
   case unsupportedAction(String)
   case accessibilityDenied
 
@@ -48,6 +49,8 @@ enum HookError: Error, CustomStringConvertible {
       return "Found a moderation menu item matching \(labels.joined(separator: ", ")), but selecting it did not change the WhatsApp UI."
     case let .buttonNotFound(labels):
       return "Could not find any confirmation button matching: \(labels.joined(separator: ", "))."
+    case let .unsafeTarget(reason):
+      return "Refusing to target an unsafe WhatsApp UI element: \(reason)."
     case let .unsupportedAction(action):
       return "Unsupported moderation action '\(action)'."
     case .accessibilityDenied:
@@ -200,6 +203,14 @@ func frame(_ element: AXUIElement) -> CGRect? {
   return CGRect(origin: origin, size: size)
 }
 
+func elementLabel(_ element: AXUIElement) -> String {
+  let text = traceSnippet(descendantText(element, depth: 2), limit: 80)
+  if text.isEmpty {
+    return role(element)
+  }
+  return "\(role(element)) \(text)"
+}
+
 @discardableResult
 func perform(_ element: AXUIElement, _ action: String) -> AXError {
   AXUIElementPerformAction(element, action as CFString)
@@ -280,9 +291,51 @@ func ensureInteractiveGuiSession() throws {
 }
 
 func appWindow(_ appElement: AXUIElement) throws -> AXUIElement {
-  guard let window = ((attr(appElement, kAXWindowsAttribute as String) as? [AXUIElement]) ?? []).first else {
+  let windows = (attr(appElement, kAXWindowsAttribute as String) as? [AXUIElement]) ?? []
+  let focusedWindow = attr(appElement, kAXFocusedWindowAttribute as String)
+    .map { unsafeBitCast($0, to: AXUIElement.self) }
+  let mainWindow = attr(appElement, kAXMainWindowAttribute as String)
+    .map { unsafeBitCast($0, to: AXUIElement.self) }
+
+  let orderedCandidates = [focusedWindow, mainWindow]
+    .compactMap { $0 }
+    .filter { candidate in
+      !windows.contains(where: { CFEqual($0, candidate) })
+    } + windows
+
+  func directSheet(in element: AXUIElement) -> AXUIElement? {
+    if let sheets = attr(element, "AXSheets") as? [AXUIElement],
+       let firstSheet = sheets.first {
+      return firstSheet
+    }
+
+    return children(element).first(where: { role($0) == "AXSheet" })
+  }
+
+  if !orderedCandidates.isEmpty {
+    let windowPreview = orderedCandidates
+      .prefix(5)
+      .map(elementLabel)
+      .joined(separator: " | ")
+    trace("App window candidates: \(windowPreview)")
+  }
+
+  for candidate in orderedCandidates {
+    if let sheet = directSheet(in: candidate) {
+      trace("Using modal sheet as interactive root: \(elementLabel(sheet))")
+      return sheet
+    }
+  }
+
+  if let focusedWindow {
+    trace("Using focused window as interactive root: \(elementLabel(focusedWindow))")
+    return focusedWindow
+  }
+
+  guard let window = windows.first else {
     throw HookError.noWindow
   }
+  trace("Using first app window as interactive root: \(elementLabel(window))")
   return window
 }
 
@@ -424,11 +477,538 @@ func openChat(named chatName: String, appElement: AXUIElement) throws -> AXUIEle
   return try appWindow(appElement)
 }
 
+func pressElementWithFallback(
+  _ element: AXUIElement,
+  label: String
+) {
+  let pressResult = perform(element, "AXPress")
+  if pressResult == .success {
+    return
+  }
+
+  if let elementFrame = frame(element), isReasonableFrame(elementFrame) {
+    trace("\(label) was not directly pressable; clicking its center point instead.")
+    clickPoint(CGPoint(x: elementFrame.midX, y: elementFrame.midY))
+  }
+}
+
+func groupInfoSeemsOpen(
+  chatName: String,
+  in root: AXUIElement
+) -> Bool {
+  let normalizedChatName = normalized(chatName)
+  let texts = normalizedTexts(in: root, roles: ["AXButton", "AXHeading", "AXStaticText", "AXGroup"], depth: 3)
+
+  let hasChatName = texts.contains { $0.contains(normalizedChatName) }
+  let stillInChatView = texts.contains {
+    $0.contains("messages in chat with \(normalizedChatName)") ||
+      $0.contains("compose message") ||
+      $0.contains("voice message")
+  }
+  let hasGroupInfoSignals = texts.contains {
+    $0 == "members" ||
+      $0.hasPrefix("members ") ||
+      $0.contains("group admins") ||
+      $0.contains("group permissions") ||
+      $0.contains("media links and docs") ||
+      $0.contains("disappearing messages")
+  }
+
+  return hasChatName && hasGroupInfoSignals && !stillInChatView
+}
+
+func findGroupHeader(
+  chatName: String,
+  in window: AXUIElement
+) -> AXUIElement? {
+  let normalizedChatName = normalized(chatName)
+  let windowFrame = frame(window)
+
+  var candidates: [AXUIElement] = []
+  findAll(window, where: {
+    let itemRole = role($0)
+    guard itemRole == "AXButton" || itemRole == "AXHeading" || itemRole == "AXStaticText" else {
+      return false
+    }
+    let text = normalized(descendantText($0, depth: 2))
+    guard text.contains(normalizedChatName) else {
+      return false
+    }
+    if let elementFrame = frame($0), let windowFrame {
+      let center = CGPoint(x: elementFrame.midX, y: elementFrame.midY)
+      let inHeaderBand = center.y < windowFrame.minY + (windowFrame.height * 0.18)
+      let inMainPane = center.x > windowFrame.minX + (windowFrame.width * 0.25)
+      return inHeaderBand && inMainPane
+    }
+    return true
+  }, into: &candidates)
+
+  let rankedCandidates = candidates
+    .map { element -> (element: AXUIElement, score: Int, text: String) in
+      let text = normalized(descendantText(element, depth: 2))
+      var score = 0
+      if text == normalizedChatName {
+        score += 25
+      } else if text.hasPrefix("\(normalizedChatName) ") {
+        score += 18
+      } else if text.contains(normalizedChatName) {
+        score += 5
+      }
+      if text.contains("online") {
+        score += 8
+      }
+      if text.contains("members") || text.contains("you") {
+        score += 2
+      }
+      if text.contains("message ") || text.contains("sent to ") || text.contains("received in ") ||
+        text.contains("disappearing message") || text.contains("list of chats") {
+        score -= 20
+      }
+      if let elementFrame = frame(element), let windowFrame {
+        let center = CGPoint(x: elementFrame.midX, y: elementFrame.midY)
+        if center.y < windowFrame.minY + (windowFrame.height * 0.18) {
+          score += 2
+        }
+        if center.x > windowFrame.minX + (windowFrame.width * 0.25) {
+          score += 2
+        }
+      }
+      return (element: element, score: score, text: text)
+    }
+    .filter { $0.score > 0 }
+    .sorted { left, right in
+      if left.score != right.score {
+        return left.score > right.score
+      }
+      return left.text.count < right.text.count
+    }
+
+  if !rankedCandidates.isEmpty {
+    let preview = rankedCandidates.prefix(5).map { traceSnippet($0.text) }.joined(separator: " | ")
+    trace("Group-header candidates: \(preview)")
+  }
+
+  return rankedCandidates.first?.element
+}
+
+func findChatListRow(
+  chatName: String,
+  in window: AXUIElement
+) -> AXUIElement? {
+  let normalizedChatName = normalized(chatName)
+  let windowFrame = frame(window)
+
+  var candidates: [AXUIElement] = []
+  findAll(window, where: {
+    let itemRole = role($0)
+    guard itemRole == "AXButton" || itemRole == "AXStaticText" || itemRole == "AXGroup" else {
+      return false
+    }
+    let text = normalized(descendantText($0, depth: 3))
+    guard text.contains(normalizedChatName) else {
+      return false
+    }
+    if let elementFrame = frame($0), let windowFrame {
+      let center = CGPoint(x: elementFrame.midX, y: elementFrame.midY)
+      let inChatList = center.x < windowFrame.minX + (windowFrame.width * 0.35)
+      let belowSearchHeader = center.y > windowFrame.minY + (windowFrame.height * 0.12)
+      return inChatList && belowSearchHeader
+    }
+    return true
+  }, into: &candidates)
+
+  let rankedCandidates = candidates
+    .map { element -> (element: AXUIElement, score: Int, text: String) in
+      let text = normalized(descendantText(element, depth: 3))
+      var score = 0
+      if text == normalizedChatName {
+        score += 12
+      } else if text.hasPrefix("\(normalizedChatName) ") {
+        score += 9
+      } else if text.contains(normalizedChatName) {
+        score += 4
+      }
+      if text.contains("list of chats") {
+        score -= 8
+      }
+      if text.contains("message from") || text.contains("your message") || text.contains("received in") {
+        score += 1
+      }
+      if let elementFrame = frame(element), let windowFrame {
+        let center = CGPoint(x: elementFrame.midX, y: elementFrame.midY)
+        if center.x < windowFrame.minX + (windowFrame.width * 0.35) {
+          score += 5
+        }
+      }
+      return (element: element, score: score, text: text)
+    }
+    .filter { $0.score > 0 }
+    .sorted { left, right in
+      if left.score != right.score {
+        return left.score > right.score
+      }
+      return left.text.count < right.text.count
+    }
+
+  if !rankedCandidates.isEmpty {
+    let preview = rankedCandidates.prefix(5).map { traceSnippet($0.text) }.joined(separator: " | ")
+    trace("Chat-list row candidates for group info fallback: \(preview)")
+  }
+
+  return rankedCandidates.first?.element
+}
+
+func openGroupInfoFromChatListContextMenu(
+  chatName: String,
+  in window: AXUIElement,
+  appElement: AXUIElement
+) throws -> Bool {
+  guard let chatRow = findChatListRow(chatName: chatName, in: window) else {
+    trace("Could not find chat-list row for group info fallback.")
+    return false
+  }
+
+  trace("Opening chat-list context menu for '\(chatName)' to find Group info.")
+  guard perform(chatRow, "AXShowMenu") == .success else {
+    trace("Chat-list row did not expose a context menu for group info fallback.")
+    return false
+  }
+  wait(seconds: 0.25)
+
+  do {
+    try clickMenuItem(containing: ["Group info", "Group Info"], in: appElement)
+  } catch {
+    trace("Chat-list context menu did not provide Group info: \(error)")
+    return false
+  }
+
+  wait(seconds: 0.8)
+  guard let refreshedRoot = try? appWindow(appElement) else {
+    return false
+  }
+  let opened = groupInfoSeemsOpen(chatName: chatName, in: refreshedRoot)
+  trace("Group info via chat-list context menu \(opened ? "opened successfully" : "did not open").")
+  return opened
+}
+
+func openGroupInfo(
+  chatName: String,
+  in window: AXUIElement,
+  appElement: AXUIElement
+) throws {
+  guard let header = findGroupHeader(chatName: chatName, in: window) else {
+    throw HookError.buttonNotFound(["Group header"])
+  }
+
+  trace("Opening group info for '\(chatName)'.")
+  _ = perform(header, "AXPress")
+  wait(seconds: 0.5)
+
+  if let refreshedRoot = try? appWindow(appElement),
+     groupInfoSeemsOpen(chatName: chatName, in: refreshedRoot) {
+    trace("Group info opened from header via AXPress.")
+    return
+  }
+
+  if let headerFrame = frame(header), isReasonableFrame(headerFrame) {
+    trace("Header AXPress did not open group info; clicking the header center point.")
+    clickPoint(CGPoint(x: headerFrame.midX, y: headerFrame.midY))
+    wait(seconds: 0.6)
+    if let refreshedRoot = try? appWindow(appElement),
+       groupInfoSeemsOpen(chatName: chatName, in: refreshedRoot) {
+      trace("Group info opened from header center click.")
+      return
+    }
+  }
+
+  trace("Header route did not open group info; trying chat-list context menu route.")
+  if try openGroupInfoFromChatListContextMenu(
+    chatName: chatName,
+    in: window,
+    appElement: appElement
+  ) {
+    return
+  }
+
+  throw HookError.buttonNotFound(["Group info"])
+}
+
+func normalizedTexts(
+  in root: AXUIElement,
+  roles allowedRoles: Set<String>,
+  depth: Int = 2
+) -> [String] {
+  var elements: [AXUIElement] = []
+  findAll(root, where: { allowedRoles.contains(role($0)) }, into: &elements)
+  let texts = elements
+    .map { normalized(descendantText($0, depth: depth)) }
+    .filter { !$0.isEmpty }
+  return Array(NSOrderedSet(array: texts)) as? [String] ?? texts
+}
+
+func previewList(_ values: [String], limit: Int = 12) -> String {
+  let preview = values.prefix(limit).joined(separator: " | ")
+  return preview.isEmpty ? "<none>" : preview
+}
+
+func logRemoveFlowDiagnostics(
+  step: String,
+  root: AXUIElement?,
+  senderName: String
+) {
+  trace("Remove-flow failure step: \(step)")
+
+  guard let root else {
+    trace("Remove-flow diagnostics: no accessible WhatsApp root available.")
+    return
+  }
+
+  trace("Remove-flow root: \(elementLabel(root))")
+
+  let buttonTexts = normalizedTexts(in: root, roles: ["AXButton"], depth: 2)
+  trace("Visible buttons during remove flow: \(previewList(buttonTexts))")
+
+  let textValues = normalizedTexts(in: root, roles: ["AXHeading", "AXStaticText", "AXGroup"], depth: 3)
+  trace("Visible texts during remove flow: \(previewList(textValues))")
+
+  let normalizedSenderName = normalized(senderName)
+  let senderRelated = textValues.filter {
+    $0.contains(normalizedSenderName) || $0.contains("members") || $0.contains("more options") || $0.contains("remove")
+  }
+  trace("Sender/member-related texts during remove flow: \(previewList(senderRelated))")
+}
+
+func memberListSeemsVisible(
+  senderName: String,
+  in root: AXUIElement
+) -> Bool {
+  let normalizedSenderName = normalized(senderName)
+  let texts = normalizedTexts(in: root, roles: ["AXButton", "AXStaticText", "AXGroup"], depth: 3)
+
+  let hasSenderMemberRow = texts.contains {
+    $0.contains(normalizedSenderName) &&
+      ($0.contains("more options") || $0.contains("group admin") || tokenCount($0) <= 8)
+  }
+  let hasYou = texts.contains { $0 == "you" || $0.contains(" you ") || $0.hasSuffix(" you") || $0.hasPrefix("you ") }
+  let hasMemberContext = texts.contains {
+    isMembersScreenText($0) || $0.contains("more options") || $0.contains("group admin")
+  }
+
+  return hasSenderMemberRow && hasYou && hasMemberContext
+}
+
+func isPermissionScreenText(_ text: String) -> Bool {
+  text.contains("members can") ||
+    text.contains("admins can") ||
+    text.contains("edit group settings") ||
+    text.contains("send new messages") ||
+    text.contains("add other members") ||
+    text.contains("invite via link") ||
+    text.contains("approve new members") ||
+    text.contains("group permissions") ||
+    text.contains("anyone in this group can invite new members")
+}
+
+func isMembersNavigationText(_ text: String) -> Bool {
+  if isPermissionScreenText(text) {
+    return false
+  }
+  if text == "members" {
+    return true
+  }
+  if text.hasPrefix("members ") && tokenCount(text) <= 6 {
+    return true
+  }
+  if text.contains(" members ") && tokenCount(text) <= 6 {
+    return true
+  }
+  return false
+}
+
+func isMembersScreenText(_ text: String) -> Bool {
+  if isPermissionScreenText(text) {
+    return false
+  }
+  return text == "members" || text.hasPrefix("members ") || text.contains("group admins")
+}
+
+func openMembersPane(
+  senderName: String,
+  in root: AXUIElement,
+  appElement: AXUIElement
+) throws -> AXUIElement {
+  let buttonPreview = normalizedTexts(in: root, roles: ["AXButton"], depth: 2)
+  trace(
+    "Visible group-info buttons before opening Members: \(buttonPreview.prefix(12).joined(separator: " | "))"
+  )
+
+  let textPreview = normalizedTexts(in: root, roles: ["AXHeading", "AXStaticText", "AXGroup"], depth: 3)
+  trace(
+    "Visible group-info texts before opening Members: \(textPreview.prefix(12).joined(separator: " | "))"
+  )
+
+  if memberListSeemsVisible(senderName: senderName, in: root) {
+    trace("Group info already appears to show the member list for '\(senderName)'; skipping Members navigation.")
+    return root
+  }
+
+  var candidates: [AXUIElement] = []
+  findAll(root, where: {
+    let itemRole = role($0)
+    guard itemRole == "AXButton" || itemRole == "AXStaticText" || itemRole == "AXGroup" else {
+      return false
+    }
+    let text = normalized(descendantText($0, depth: 2))
+    return isMembersNavigationText(text)
+  }, into: &candidates)
+
+  let rankedCandidates = candidates
+    .map { element -> (element: AXUIElement, score: Int, text: String) in
+      let text = normalized(descendantText(element, depth: 2))
+      var score = 0
+      if text == "members" {
+        score += 10
+      } else if text.hasPrefix("members ") && tokenCount(text) <= 6 {
+        score += 7
+      } else if text.contains(" members ") && tokenCount(text) <= 6 {
+        score += 4
+      }
+      if role(element) == "AXButton" {
+        score += 2
+      }
+      return (element: element, score: score, text: text)
+    }
+    .sorted { left, right in
+      if left.score != right.score {
+        return left.score > right.score
+      }
+      return left.text.count < right.text.count
+    }
+
+  if !rankedCandidates.isEmpty {
+    let preview = rankedCandidates.prefix(6).map(\.text).joined(separator: " | ")
+    trace("Members navigation candidates: \(preview)")
+  }
+
+  guard let membersControl = rankedCandidates.first?.element else {
+    throw HookError.buttonNotFound(["Members"])
+  }
+
+  trace("Opening Members pane.")
+  pressElementWithFallback(membersControl, label: "Members button")
+  wait(seconds: 0.8)
+
+  let refreshedRoot = try appWindow(appElement)
+  let refreshedTextPreview = normalizedTexts(in: refreshedRoot, roles: ["AXHeading", "AXStaticText", "AXGroup"], depth: 3)
+  trace(
+    "Visible texts after opening Members: \(refreshedTextPreview.prefix(12).joined(separator: " | "))"
+  )
+  return refreshedRoot
+}
+
+func logVisibleMemberEntries(in root: AXUIElement) {
+  var elements: [AXUIElement] = []
+  findAll(root, where: {
+    let itemRole = role($0)
+    return itemRole == "AXButton" || itemRole == "AXStaticText" || itemRole == "AXGroup"
+  }, into: &elements)
+
+  let normalizedEntries = elements
+    .compactMap { element -> String? in
+      let text = normalized(descendantText(element, depth: 3))
+      guard !text.isEmpty else {
+        return nil
+      }
+      if text.contains("add members") || text.contains("invite via link") || text.contains("search") {
+        return nil
+      }
+      if text.contains("admin") || text.contains("more options") || tokenCount(text) <= 6 {
+        return text
+      }
+      return nil
+    }
+
+  let entries = Array(NSOrderedSet(array: normalizedEntries)) as? [String] ?? normalizedEntries
+  if !entries.isEmpty {
+    trace("Visible group members: \(entries.prefix(10).joined(separator: " | "))")
+  } else {
+    trace("Visible group members: <none>")
+  }
+}
+
+func moreOptionsButtonForMember(
+  named senderName: String,
+  in root: AXUIElement
+) -> AXUIElement? {
+  let normalizedSenderName = normalized(senderName)
+  var groups: [AXUIElement] = []
+  findAll(root, where: { role($0) == "AXGroup" }, into: &groups)
+
+  let rankedGroups = groups
+    .map { group -> (group: AXUIElement, text: String, score: Int) in
+      let text = normalized(descendantText(group, depth: 3))
+      var score = 0
+      if text.contains(normalizedSenderName) {
+        score += 5
+      }
+      if text.contains("more options") {
+        score += 3
+      }
+      return (group: group, text: text, score: score)
+    }
+    .filter { $0.score > 0 }
+    .sorted { left, right in
+      if left.score != right.score {
+        return left.score > right.score
+      }
+      return left.text.count < right.text.count
+    }
+
+  for match in rankedGroups {
+    if let button = children(match.group).first(where: {
+      role($0) == "AXButton" && normalized(descendantText($0, depth: 2)).contains("more options")
+    }) {
+      return button
+    }
+  }
+
+  return nil
+}
+
+func openMemberOptionsMenu(
+  senderName: String,
+  in root: AXUIElement
+) throws {
+  let normalizedSenderName = normalized(senderName)
+  var memberRows: [AXUIElement] = []
+  findAll(root, where: { role($0) == "AXGroup" || role($0) == "AXButton" }, into: &memberRows)
+  let memberPreview = memberRows
+    .map { normalized(descendantText($0, depth: 3)) }
+    .filter { $0.contains(normalizedSenderName) || $0.contains("more options") }
+  if !memberPreview.isEmpty {
+    trace("Candidate member rows for '\(senderName)': \(memberPreview.prefix(6).joined(separator: " | "))")
+  }
+
+  guard let moreOptionsButton = moreOptionsButtonForMember(named: senderName, in: root) else {
+    throw HookError.buttonNotFound(["More options"])
+  }
+
+  trace("Opening member options for '\(senderName)'.")
+  pressElementWithFallback(moreOptionsButton, label: "Member more-options button")
+  wait(seconds: 0.4)
+}
+
 func messageMatchScore(description: String, decision: ModerationDecision) -> Int {
   let normalizedDescription = normalized(description)
   let normalizedText = normalized(decision.text)
   let snippet = String(normalizedText.prefix(80))
   var score = 0
+
+  if !decision.senderName.isEmpty,
+     normalized(decision.senderName) != "you",
+     normalizedDescription.contains("your message") {
+    return -1_000
+  }
 
   if normalizedDescription.contains(snippet) {
     score += 8
@@ -448,11 +1028,6 @@ func messageMatchScore(description: String, decision: ModerationDecision) -> Int
      normalizedDescription.contains("message from"),
      normalizedDescription.contains(normalized(decision.senderName)) {
     score += 5
-  }
-  if !decision.senderName.isEmpty,
-     normalized(decision.senderName) != "you",
-     normalizedDescription.contains("your message") {
-    score -= 10
   }
   if !decision.fromJid.isEmpty {
     let digits = decision.fromJid.replacingOccurrences(of: "[^0-9]+", with: "", options: .regularExpression)
@@ -530,6 +1105,53 @@ func clickButton(
   if let decision, let consequentialLabel {
     wait(seconds: 0.3)
     captureActionScreenshot(stage: "after", consequentialLabel: consequentialLabel, decision: decision)
+  }
+}
+
+func clickDoneIfVisible(appElement: AXUIElement, chatName: String) {
+  guard let root = try? appWindow(appElement) else {
+    trace("Could not read WhatsApp UI while trying to close group info.")
+    return
+  }
+
+  var buttons: [AXUIElement] = []
+  findAll(root, where: { role($0) == "AXButton" }, into: &buttons)
+
+  let rankedButtons = buttons
+    .map { element in
+      let haystack = descendantText(element, depth: 2)
+      return (
+        element: element,
+        score: actionLabelMatchScore(haystack: haystack, labels: ["Done"]) ?? -1,
+        haystack: haystack
+      )
+    }
+    .filter { $0.score >= 0 }
+    .sorted { left, right in
+      if left.score != right.score {
+        return left.score > right.score
+      }
+      return left.haystack.count < right.haystack.count
+    }
+
+  guard let doneButton = rankedButtons.first?.element else {
+    trace("No Done button was visible after remove_sender; leaving WhatsApp on the current screen.")
+    return
+  }
+
+  trace("Clicking Done to return from group info to the main chat screen.")
+  pressElementWithFallback(doneButton, label: "Done button")
+  wait(seconds: 0.5)
+
+  guard let refreshedRoot = try? appWindow(appElement) else {
+    trace("Could not verify WhatsApp screen after clicking Done.")
+    return
+  }
+
+  if groupInfoSeemsOpen(chatName: chatName, in: refreshedRoot) {
+    trace("Done was clicked, but group info still appears to be open.")
+  } else {
+    trace("Returned to the main chat screen after remove_sender.")
   }
 }
 
@@ -616,13 +1238,13 @@ func normalizedMenuOptions(_ menuItems: [AXUIElement]) -> [String] {
   return Array(NSOrderedSet(array: options)) as? [String] ?? options
 }
 
-func logMenuOptions(_ menuItems: [AXUIElement]) {
+func logMenuOptions(_ menuItems: [AXUIElement], context: String = "context menu") {
   let uniqueOptions = normalizedMenuOptions(menuItems)
   let preview = uniqueOptions.prefix(12).joined(separator: " | ")
   if preview.isEmpty {
-    trace("Visible context menu options: <none>")
+    trace("Visible \(context) options: <none>")
   } else {
-    trace("Visible context menu options: \(preview)")
+    trace("Visible \(context) options: \(preview)")
   }
 }
 
@@ -767,6 +1389,66 @@ func selectedMessageFooterFrame(in root: AXUIElement) -> CGRect? {
   return rankedGroups.first?.frame
 }
 
+func footerTexts(in root: AXUIElement, footerFrame: CGRect) -> [String] {
+  var elements: [AXUIElement] = []
+  findAll(root, where: {
+    let itemRole = role($0)
+    return itemRole == "AXButton" || itemRole == "AXStaticText" || itemRole == "AXGroup"
+  }, into: &elements)
+
+  let candidateTexts = elements.compactMap { element -> (text: String, priority: Int)? in
+    guard let elementFrame = frame(element), isReasonableFrame(elementFrame) else {
+      return nil
+    }
+
+    let center = CGPoint(x: elementFrame.midX, y: elementFrame.midY)
+    guard footerFrame.contains(center) else {
+      return nil
+    }
+
+    let text = normalized(descendantText(element, depth: 2))
+    guard !text.isEmpty else {
+      return nil
+    }
+
+    let isActionBarText =
+      text == "delete" ||
+      text == "cancel" ||
+      text == "1 selected" ||
+      text == "selected" ||
+      text.contains(" selected") ||
+      text.contains("delete") ||
+      text.contains("cancel")
+
+    let priority: Int
+    if text == "delete" || text == "cancel" || text == "1 selected" {
+      priority = 3
+    } else if tokenCount(text) <= 4 && isActionBarText {
+      priority = 2
+    } else if isActionBarText {
+      priority = 1
+    } else {
+      priority = 0
+    }
+
+    return (text: text, priority: priority)
+  }
+
+  let filtered = candidateTexts.filter { $0.priority > 0 }
+  let sorted = filtered.sorted { left, right in
+    if left.priority != right.priority {
+      return left.priority > right.priority
+    }
+    if tokenCount(left.text) != tokenCount(right.text) {
+      return tokenCount(left.text) < tokenCount(right.text)
+    }
+    return left.text.count < right.text.count
+  }
+
+  let texts = sorted.map(\.text)
+  return Array(NSOrderedSet(array: texts)) as? [String] ?? texts
+}
+
 func clickDeleteMenuItemAndEnsureSelectionMode(
   in appElement: AXUIElement,
   decision: ModerationDecision
@@ -856,22 +1538,17 @@ func clickSelectedMessageToolbarDelete(
   trace("Found \(elements.count) candidate(s) while looking for the selected-message delete toolbar action.")
 
   let rootFrame = frame(root)
-  let footerTexts = elements
-    .compactMap { element -> String? in
-      let elementFrame = frame(element)
-      guard let rootFrame, let elementFrame else {
-        return nil
-      }
-      let center = CGPoint(x: elementFrame.midX, y: elementFrame.midY)
-      guard center.y > rootFrame.minY + (rootFrame.height * 0.75) else {
-        return nil
-      }
-      let text = normalized(descendantText(element, depth: 2))
-      return text.isEmpty ? nil : text
+  let footerFrame = selectedMessageFooterFrame(in: root)
+  if let footerFrame {
+    trace(
+      "Selected-message footer frame: x=\(Int(footerFrame.minX)) y=\(Int(footerFrame.minY)) w=\(Int(footerFrame.width)) h=\(Int(footerFrame.height))."
+    )
+    let visibleFooterTexts = footerTexts(in: root, footerFrame: footerFrame)
+    if !visibleFooterTexts.isEmpty {
+      trace("Visible selected-message action bar options: \(visibleFooterTexts.prefix(10).joined(separator: " | "))")
     }
-  let uniqueFooterTexts = Array(NSOrderedSet(array: footerTexts)) as? [String] ?? footerTexts
-  if !uniqueFooterTexts.isEmpty {
-    trace("Visible selected-message footer options: \(uniqueFooterTexts.prefix(10).joined(separator: " | "))")
+  } else {
+    trace("Selected-message footer frame was not discoverable.")
   }
 
   let rankedButtons = elements
@@ -949,7 +1626,7 @@ func clickSelectedMessageToolbarDelete(
     throw HookError.buttonNotFound(["Delete"])
   }
 
-  if !openedConfirmation, let footerFrame = selectedMessageFooterFrame(in: root) {
+  if !openedConfirmation, let footerFrame {
     let fallbackPoint = CGPoint(
       x: footerFrame.midX,
       y: footerFrame.midY
@@ -1083,21 +1760,57 @@ func handleDeleteMessage(_ decision: ModerationDecision, appElement: AXUIElement
 }
 
 func handleRemoveSender(_ decision: ModerationDecision, appElement: AXUIElement) throws {
+  var currentStep = "open chat"
   let window = try openChat(named: decision.chatName, appElement: appElement)
-  let message = try findMessage(decision, in: window)
-  guard perform(message, "AXShowMenu") == .success else {
-    throw HookError.menuNotAvailable
+  do {
+    currentStep = "open group info from header"
+    try openGroupInfo(chatName: decision.chatName, in: window, appElement: appElement)
+
+    currentStep = "read group info root"
+    let groupInfoWindow = try appWindow(appElement)
+
+    currentStep = "open members pane or detect visible member list"
+    let membersWindow = try openMembersPane(
+      senderName: decision.senderName,
+      in: groupInfoWindow,
+      appElement: appElement
+    )
+
+    currentStep = "inspect visible member entries"
+    logVisibleMemberEntries(in: membersWindow)
+
+    currentStep = "open member options menu"
+    try openMemberOptionsMenu(senderName: decision.senderName, in: membersWindow)
+    trace("Opened member options menu for '\(decision.senderName)'.")
+
+    currentStep = "inspect member options menu"
+    let memberMenuItems = findMenuItems(in: appElement)
+    trace("Found \(memberMenuItems.count) member-options menu item candidate(s) while looking for remove action.")
+    logMenuOptions(memberMenuItems, context: "member menu for '\(decision.senderName)'")
+
+    currentStep = "choose remove-from-group action"
+    try chooseMenuItem(
+      searchText: "remove",
+      menuLabels: ["Remove from group", "Remove participant", "Remove", "Remove from community"],
+      confirmLabels: ["Remove"],
+      appElement: appElement,
+      decision: decision,
+      consequentialLabel: "remove-sender",
+      requireConfirmation: true
+    )
+    wait(seconds: 0.5)
+
+    currentStep = "close group info"
+    clickDoneIfVisible(appElement: appElement, chatName: decision.chatName)
+  } catch {
+    let diagnosticRoot = try? appWindow(appElement)
+    logRemoveFlowDiagnostics(
+      step: currentStep,
+      root: diagnosticRoot,
+      senderName: decision.senderName
+    )
+    throw error
   }
-  trace("Opened context menu for the matched message.")
-  wait(seconds: 0.3)
-  try chooseMenuItem(
-    searchText: "remove",
-    menuLabels: ["Remove", "Remove participant", "Remove from group", "Remove from community"],
-    confirmLabels: ["Remove", "Remove participant", "Remove from group", "Remove from community", "OK"],
-    appElement: appElement,
-    decision: decision,
-    consequentialLabel: "remove-sender"
-  )
 }
 
 let input = String(data: FileHandle.standardInput.readDataToEndOfFile(), encoding: .utf8) ?? ""

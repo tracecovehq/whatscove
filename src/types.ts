@@ -150,8 +150,10 @@ export interface ScanResult {
   snapshot: MessageSnapshot;
   matches: SuspiciousMatch[];
   freshMatches: SuspiciousMatch[];
+  duplicateMatches: SuspiciousMatch[];
   weakMatches: SuspiciousMatch[];
   freshWeakMatches: SuspiciousMatch[];
+  duplicateWeakMatches: SuspiciousMatch[];
   rulesPath: string;
   ruleCount: number;
   moderationDecisions: ModerationDecision[];
@@ -175,6 +177,8 @@ export interface ModerationPolicy {
   actions: ModerationActionType[];
   ignoreLocallyBannedUsers: boolean;
   skipAdminSenders: boolean;
+  retryFailedActions: boolean;
+  retryFailedActionsLookbackHours: number;
   captureActionScreenshots: boolean;
   screenshotDirectory: string;
   hookCommand: string;
@@ -185,6 +189,7 @@ export interface ModerationDecision {
   id: string;
   createdAt: string;
   status: "queued" | "pending_apply" | "applied" | "failed";
+  resumedFromFailure?: boolean;
   action: ModerationActionType;
   matchFingerprint: string;
   chatName: string;

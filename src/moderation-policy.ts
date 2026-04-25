@@ -81,6 +81,13 @@ export async function loadModerationPolicy(
     actions: defaultActions,
     ignoreLocallyBannedUsers: parsed.ignoreLocallyBannedUsers === true,
     skipAdminSenders: parsed.skipAdminSenders !== false,
+    retryFailedActions: parsed.retryFailedActions === true,
+    retryFailedActionsLookbackHours:
+      typeof parsed.retryFailedActionsLookbackHours === "number" &&
+      Number.isFinite(parsed.retryFailedActionsLookbackHours) &&
+      parsed.retryFailedActionsLookbackHours > 0
+        ? parsed.retryFailedActionsLookbackHours
+        : 24,
     captureActionScreenshots: parsed.captureActionScreenshots === true,
     screenshotDirectory:
       typeof parsed.screenshotDirectory === "string" && parsed.screenshotDirectory.trim()

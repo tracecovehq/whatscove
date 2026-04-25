@@ -262,6 +262,15 @@ function renderModerationTrace(prefix: string, decision: ModerationDecision): st
   return lines.join("\n");
 }
 
+function renderDuplicateMatchLine(prefix: string, match: SuspiciousMatch): string {
+  return renderStatusLine(
+    "DUP",
+    prefix,
+    `ignored duplicate ${match.ruleLabel || "spam"} match in ${match.chatName} from ${match.senderName || match.fromJid} at ${match.messageTimeLocal || "unknown time"} (fingerprint ${match.fingerprint})`,
+    "warning"
+  );
+}
+
 function parseCliArgs(argv: string[]): ParsedArgs {
   const [firstArg, ...restArgs] = argv;
   const hasExplicitCommand =
@@ -480,25 +489,34 @@ async function main(): Promise<void> {
     await bot.watch((result) => {
       const prefix = `[${new Date().toISOString()}]`;
       const chronologicalFreshMatches = sortMatchesChronologically(result.freshMatches);
+      const chronologicalDuplicateMatches = sortMatchesChronologically(result.duplicateMatches);
       const chronologicalFreshWeakMatches = sortMatchesChronologically(result.freshWeakMatches);
       const watchStream = buildChronologicalWatchStream(
         chronologicalFreshMatches,
         chronologicalFreshWeakMatches
       );
 
-      if (watchStream.length === 0) {
+      if (watchStream.length === 0 && chronologicalDuplicateMatches.length === 0) {
         console.log(renderInfoLine(prefix, "scan complete, no new spam-rule matches."));
         return;
       }
 
-      console.log(
-        renderInfoLine(
-          prefix,
-          `${watchStream.length} new log entr${watchStream.length === 1 ? "y" : "ies"}:`
-        )
-      );
-      for (const entry of watchStream) {
-        console.log(renderWatchEntry(entry));
+      if (watchStream.length > 0) {
+        console.log(
+          renderInfoLine(
+            prefix,
+            `${watchStream.length} new log entr${watchStream.length === 1 ? "y" : "ies"}:`
+          )
+        );
+        for (const entry of watchStream) {
+          console.log(renderWatchEntry(entry));
+        }
+      }
+
+      if (chronologicalDuplicateMatches.length > 0) {
+        for (const match of chronologicalDuplicateMatches) {
+          console.log(renderDuplicateMatchLine(prefix, match));
+        }
       }
 
       if (result.moderationDecisions.length > 0) {
@@ -526,12 +544,16 @@ async function main(): Promise<void> {
           scannedMessages: result.snapshot.messages.length,
           matchCount: result.matches.length,
           freshMatchCount: result.freshMatches.length,
+          duplicateMatchCount: result.duplicateMatches.length,
           weakMatchCount: result.weakMatches.length,
           freshWeakMatchCount: result.freshWeakMatches.length,
+          duplicateWeakMatchCount: result.duplicateWeakMatches.length,
           matches: result.matches,
           freshMatches: result.freshMatches,
+          duplicateMatches: result.duplicateMatches,
           weakMatches: result.weakMatches,
-          freshWeakMatches: result.freshWeakMatches
+          freshWeakMatches: result.freshWeakMatches,
+          duplicateWeakMatches: result.duplicateWeakMatches
         },
         null,
         2

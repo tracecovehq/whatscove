@@ -66,6 +66,10 @@ Moderation policy toggles:
   Leave this `false` if you want moderators to keep seeing repeat spam after failures.
 - `skipAdminSenders: true|false`
   Leave this `true` to keep logging admin-posted spam examples without auto-deleting messages or removing admins. Set it to `false` only if you intentionally want admins to be auto-moderated too.
+- `retryFailedActions: true|false`
+  Leave this `false` by default if you do not want the bot to resume old failed destructive actions when it restarts. Turn it on only if you want `apply` mode to retry unfinished actions like `remove_sender`.
+- `retryFailedActionsLookbackHours: number`
+  When failed-action retry is enabled, only retry actions newer than this many hours from the moderation event log.
 - `captureActionScreenshots: true|false`
   Turn before/after screenshots for destructive UI actions on or off.
 - `screenshotDirectory: "/absolute/path"`

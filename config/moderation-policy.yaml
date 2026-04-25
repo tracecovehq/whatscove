@@ -11,6 +11,10 @@ actions:
 ignoreLocallyBannedUsers: false
 # Keep true to log admin-posted examples but avoid deleting/removing admins automatically.
 skipAdminSenders: true
+# When true, retry previously failed destructive actions from the moderation event log on later apply runs.
+retryFailedActions: false
+# Only used when retryFailedActions is true. Limits how far back to look for failed actions to resume.
+retryFailedActionsLookbackHours: 24
 # When true, save before/after screenshots around destructive UI actions.
 captureActionScreenshots: true
 # Optional absolute path. Leave empty to use data/moderation-screenshots/.

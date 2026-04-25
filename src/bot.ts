@@ -113,6 +113,8 @@ export async function findSuspiciousEntries(
       const isZeroSignal = result.score <= 0;
       const candidateMatch = {
         fingerprint: buildFingerprint({
+          messagePk: row.messagePk,
+          messageTimeLocal: row.messageTimeLocal,
           chatName: row.chatName,
           senderName: row.senderName,
           ruleId: isZeroSignal ? "no-rule-signal" : result.ruleId,
@@ -356,6 +358,8 @@ export class WhatsAppSpamGuard {
         actions: [],
         ignoreLocallyBannedUsers: false,
         skipAdminSenders: true,
+        retryFailedActions: false,
+        retryFailedActionsLookbackHours: 24,
         captureActionScreenshots: false,
         screenshotDirectory: "",
         hookCommand: "",
@@ -383,8 +387,12 @@ export class WhatsAppSpamGuard {
     );
     this.lastSeenMessagePk = maxSeenPk;
     const freshMatches = matches.filter((match) => !this.seenFingerprints.has(match.fingerprint));
+    const duplicateMatches = matches.filter((match) => this.seenFingerprints.has(match.fingerprint));
     const freshWeakMatches = weakMatches.filter(
       (match) => !this.seenFingerprints.has(match.fingerprint)
+    );
+    const duplicateWeakMatches = weakMatches.filter(
+      (match) => this.seenFingerprints.has(match.fingerprint)
     );
     const moderationDecisions = await handleModeration(
       freshMatches,
@@ -418,8 +426,10 @@ export class WhatsAppSpamGuard {
       snapshot,
       matches,
       freshMatches,
+      duplicateMatches,
       weakMatches,
       freshWeakMatches,
+      duplicateWeakMatches,
       rulesPath: this.options.rulesPath,
       ruleCount: this.options.rules.length,
       moderationDecisions
