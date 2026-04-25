@@ -44,6 +44,9 @@ type HookRunResult = {
   uiTrace: string[];
 };
 
+// A decision id represents one action against one detected message instance.
+// The match fingerprint includes messagePk/messageTimeLocal, so identical spam
+// text from two different senders or times still produces distinct moderation work.
 function buildDecisionId(match: SuspiciousMatch, action: ModerationActionType): string {
   return createHash("sha1")
     .update(JSON.stringify([match.fingerprint, action]))
@@ -119,6 +122,9 @@ export function mergeModerationDecisions(
   planned: ModerationDecision[],
   resumable: ModerationDecision[]
 ): ModerationDecision[] {
+  // Resumed failures come from the append-only event log, while planned decisions
+  // come from the current scan. Prefer current planned data if both sources mention
+  // the same id, then execute oldest-first so logs read like a timeline.
   const merged = new Map<string, ModerationDecision>();
 
   for (const decision of resumable) {
@@ -142,6 +148,9 @@ export function getBundledHookCommand(): { command: string; args: string[] } {
 export function getBundledHookEnvironment(
   baseEnv: NodeJS.ProcessEnv = process.env
 ): NodeJS.ProcessEnv {
+  // Codex/shell sessions can inherit SDK or Nix paths that confuse /usr/bin/swift.
+  // Strip those variables so the bundled hook behaves like it was launched from a
+  // normal macOS terminal.
   const env = { ...baseEnv };
   for (const key of BUNDLED_HOOK_ENV_OVERRIDES) {
     delete env[key];
@@ -179,6 +188,8 @@ async function runProcess(
 
     child.on("error", reject);
     child.on("close", (code, signal) => {
+      // The hook's stdout is a user-facing UI trace. Preserve it on both success
+      // and failure so a human can see what WhatsApp exposed and what was clicked.
       const uiTrace = stdout
         .split("\n")
         .map((line) => line.trimEnd())
@@ -375,6 +386,10 @@ export async function handleModeration(
   matches: SuspiciousMatch[],
   policy: ModerationPolicy
 ): Promise<ModerationDecision[]> {
+  // Moderation has three modes:
+  // detect records decisions, queue records decisions for a separate executor,
+  // and apply invokes the hook immediately. Failed destructive actions are only
+  // resumed when policy explicitly opts in with retryFailedActions.
   const state = await loadModerationState();
   const plannedDecisions = planModerationDecisions(matches, policy, state);
   const resumableDecisions =

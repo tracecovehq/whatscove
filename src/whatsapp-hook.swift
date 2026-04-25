@@ -2,6 +2,13 @@ import Cocoa
 import ApplicationServices
 import Foundation
 
+// Bundled moderation executor for WhatsApp Desktop on macOS.
+//
+// The TypeScript bot owns detection, policy, persistence, and retry. This Swift
+// script only receives one ModerationDecision JSON object on stdin and performs
+// the requested UI action through macOS Accessibility. Keep stdout trace lines
+// descriptive: they are persisted into moderation-events.jsonl and are the main
+// way to debug failures in WhatsApp's changing desktop UI.
 struct ModerationDecision: Decodable {
   let id: String?
   let action: String
@@ -291,6 +298,9 @@ func ensureInteractiveGuiSession() throws {
 }
 
 func appWindow(_ appElement: AXUIElement) throws -> AXUIElement {
+  // Prefer a modal sheet when one exists. WhatsApp exposes destructive
+  // confirmations such as "Delete for everyone" and "Remove" as sheets; searching
+  // the main window while a sheet is open misses the buttons we need.
   let windows = (attr(appElement, kAXWindowsAttribute as String) as? [AXUIElement]) ?? []
   let focusedWindow = attr(appElement, kAXFocusedWindowAttribute as String)
     .map { unsafeBitCast($0, to: AXUIElement.self) }
@@ -696,6 +706,10 @@ func openGroupInfo(
   in window: AXUIElement,
   appElement: AXUIElement
 ) throws {
+  // Opening group info is the most version-sensitive part of remove_sender.
+  // Try the chat header first, then a coordinate click on the same header, then
+  // the chat-list context menu's "Group info" item. The fallback order mirrors
+  // the flows that worked in manual WhatsApp Desktop testing.
   guard let header = findGroupHeader(chatName: chatName, in: window) else {
     throw HookError.buttonNotFound(["Group header"])
   }
@@ -837,6 +851,9 @@ func openMembersPane(
   in root: AXUIElement,
   appElement: AXUIElement
 ) throws -> AXUIElement {
+  // The group-info sidebar contains both "Members" and "Group permissions".
+  // Permission screens also mention "members", so navigation filters reject
+  // permission-related text before choosing a Members control.
   let buttonPreview = normalizedTexts(in: root, roles: ["AXButton"], depth: 2)
   trace(
     "Visible group-info buttons before opening Members: \(buttonPreview.prefix(12).joined(separator: " | "))"
@@ -1191,6 +1208,9 @@ func logButtonOptions(
 }
 
 func activeMenu(in root: AXUIElement) -> ActiveMenu? {
+  // macOS can expose unrelated menus from other apps or Finder while WhatsApp is
+  // focused. Rank menus by visible on-screen items, then callers verify the menu
+  // looks like a WhatsApp message/member menu before choosing destructive items.
   var menus: [AXUIElement] = []
   findAll(root, where: { role($0) == "AXMenu" }, into: &menus)
 
@@ -1453,6 +1473,9 @@ func clickDeleteMenuItemAndEnsureSelectionMode(
   in appElement: AXUIElement,
   decision: ModerationDecision
 ) throws {
+  // Selecting "Delete" from a message menu should enter WhatsApp's selected-
+  // message mode, not delete anything yet. Verify that state transition before
+  // moving to the action bar/trash step.
   let labels = ["Delete", "Delete Message"]
   let normalizedLabels = labels.map(normalized)
   let activeMenuContext = activeMenu(in: appElement)
@@ -1530,6 +1553,10 @@ func clickSelectedMessageToolbarDelete(
   appElement: AXUIElement,
   decision: ModerationDecision
 ) throws {
+  // WhatsApp sometimes exposes a labeled "Delete" accessibility element in the
+  // action bar that does not actually press the visual trash icon. Try the label
+  // first for semantics, then fall back to the visual bottom-center trash control
+  // and prove success by detecting the delete confirmation sheet.
   var elements: [AXUIElement] = []
   findAll(root, where: {
     let itemRole = role($0)
@@ -1728,6 +1755,9 @@ func notify(_ decision: ModerationDecision) throws {
 }
 
 func handleDeleteMessage(_ decision: ModerationDecision, appElement: AXUIElement) throws {
+  // End-to-end UI sequence:
+  // message context menu -> Delete -> selected-message action bar trash ->
+  // Delete for everyone -> final admin Delete confirmation.
   let window = try openChat(named: decision.chatName, appElement: appElement)
   let message = try findMessage(decision, in: window)
   guard perform(message, "AXShowMenu") == .success else {
@@ -1760,6 +1790,11 @@ func handleDeleteMessage(_ decision: ModerationDecision, appElement: AXUIElement
 }
 
 func handleRemoveSender(_ decision: ModerationDecision, appElement: AXUIElement) throws {
+  // End-to-end UI sequence:
+  // chat header/group info -> Members -> sender More options ->
+  // Remove from group -> Remove confirmation -> Done.
+  // Do not fall back to right-clicking the spam message here; delete_message may
+  // have already removed that message, so member removal must target group info.
   var currentStep = "open chat"
   let window = try openChat(named: decision.chatName, appElement: appElement)
   do {

@@ -6,6 +6,8 @@ It reads WhatsApp Desktop's local `ChatStorage.sqlite`, scores message text agai
 
 It can also auto-moderate matches through a moderation policy: queue moderation decisions and in `apply` mode either invoke a custom hook or fall back to the bundled WhatsApp Desktop accessibility hook for destructive actions like message deletion and sender removal.
 
+For engineering documentation, start with [docs/INDEX.md](docs/INDEX.md). The docs cover architecture, detection, moderation, operations, and development workflows.
+
 ## What it catches
 
 - The default stock-advice spam rule shipped with the project.
@@ -21,7 +23,7 @@ It can also auto-moderate matches through a moderation policy: queue moderation 
 
 ## Rules
 
-The default rules live in [spam-rules.yaml](/Users/jlukanta/Projects/tracecove/whatscove/config/spam-rules.yaml), and WhatsCove also supports `spam-rules.json` / `spam-rules.yml`.
+The default rules live in [spam-rules.yaml](config/spam-rules.yaml), and WhatsCove also supports `spam-rules.json` / `spam-rules.yml`.
 
 Each rule can define:
 
@@ -40,7 +42,7 @@ You can add as many rules as you want to that file, or point the CLI at a differ
 
 ## Moderation
 
-The default moderation policy lives in [moderation-policy.yaml](/Users/jlukanta/Projects/tracecove/whatscove/config/moderation-policy.yaml), and WhatsCove also supports `moderation-policy.json` / `moderation-policy.yml`.
+The default moderation policy lives in [moderation-policy.yaml](config/moderation-policy.yaml), and WhatsCove also supports `moderation-policy.json` / `moderation-policy.yml`.
 
 Supported moderation actions:
 
@@ -73,9 +75,9 @@ Moderation policy toggles:
 - `captureActionScreenshots: true|false`
   Turn before/after screenshots for destructive UI actions on or off.
 - `screenshotDirectory: "/absolute/path"`
-  Override where moderation screenshots are written. Leave empty to use [data/moderation-screenshots](/Users/jlukanta/Projects/tracecove/whatscove/data/moderation-screenshots).
+  Override where moderation screenshots are written. Leave empty to use [data/moderation-screenshots](data/moderation-screenshots).
 - `hookCommand: "..."|`
-  Set a custom moderation executor, or leave empty to use the bundled [whatsapp-hook.swift](/Users/jlukanta/Projects/tracecove/whatscove/src/whatsapp-hook.swift).
+  Set a custom moderation executor, or leave empty to use the bundled [whatsapp-hook.swift](src/whatsapp-hook.swift).
 - `perRule.<rule-id>.actions:`
   Override default actions for one specific spam family.
 
@@ -88,7 +90,7 @@ Moderation data files:
 
 Important:
 
-- If `hookCommand` is empty, `apply` mode falls back to the bundled [whatsapp-hook.swift](/Users/jlukanta/Projects/tracecove/whatscove/src/whatsapp-hook.swift) executor.
+- If `hookCommand` is empty, `apply` mode falls back to the bundled [whatsapp-hook.swift](src/whatsapp-hook.swift) executor.
 - `delete_message` and `remove_sender` in the bundled hook are best-effort WhatsApp Desktop accessibility automations. They depend on your admin permissions in the chat and on WhatsApp’s current macOS UI labels.
 - The default policy does not use local bans, so moderators can keep seeing repeat spam if delete/remove actions fail.
 
@@ -106,21 +108,21 @@ Important:
 Run a one-off scan:
 
 ```bash
-cd /Users/jlukanta/Projects/tracecove/whatscove
+cd whatscove
 node --experimental-strip-types ./src/cli.ts scan
 ```
 
 Run a continuous watcher:
 
 ```bash
-cd /Users/jlukanta/Projects/tracecove/whatscove
+cd whatscove
 node --experimental-strip-types ./src/cli.ts watch --poll-seconds 20
 ```
 
 Run a watcher that also prints weak testing matches without treating them as real spam:
 
 ```bash
-cd /Users/jlukanta/Projects/tracecove/whatscove
+cd whatscove
 node --experimental-strip-types ./src/cli.ts watch --poll-seconds 20 --weak-min-score 0.10
 ```
 
@@ -163,7 +165,7 @@ node --experimental-strip-types ./src/cli.ts fixture \
 Append a new spam rule from the terminal:
 
 ```bash
-cd /Users/jlukanta/Projects/tracecove/whatscove
+cd whatscove
 node --experimental-strip-types ./src/cli.ts add-rule \
   --label "Crypto signal promo" \
   --template "Join our free crypto signal team for daily bitcoin calls and market updates" \

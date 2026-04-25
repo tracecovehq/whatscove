@@ -31,6 +31,10 @@ async function loadLatestFailedDecisionIds(): Promise<Set<string>> {
   );
 }
 
+// The event log is append-only, so state recovery is a replay problem: for each
+// decision id, keep the latest event and use that as the source of truth. This
+// lets us recover from crashes and also makes failed decisions eligible for an
+// explicit future retry without rewriting historical log lines.
 async function loadLatestModerationEventsByDecisionId(): Promise<Map<string, ModerationDecision>> {
   try {
     const raw = await readFile(MODERATION_EVENTS_PATH, "utf8");
@@ -87,6 +91,8 @@ export async function loadModerationState(): Promise<ModerationState> {
         : [],
       processedDecisionIds: Array.isArray(parsed.processedDecisionIds)
         ? parsed.processedDecisionIds.filter(
+            // Failed actions should not remain permanently "processed". They are
+            // still not retried by default; policy.retryFailedActions controls that.
             (value): value is string =>
               typeof value === "string" && !latestFailedDecisionIds.has(value)
           )
@@ -125,6 +131,9 @@ export async function appendModerationEvents(events: ModerationDecision[]): Prom
 export async function loadPendingFailedModerationDecisions(
   lookbackHours: number
 ): Promise<ModerationDecision[]> {
+  // Restart retry is intentionally opt-in from moderation.ts. This helper only
+  // returns recent failed destructive actions so an operator can bound the blast
+  // radius when resuming unfinished work.
   const latestEvents = await loadLatestModerationEventsByDecisionId();
   const cutoffTime = Date.now() - lookbackHours * 60 * 60 * 1000;
   return [...latestEvents.values()]

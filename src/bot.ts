@@ -81,6 +81,10 @@ function getModerationSenderJid(row: MessageSnapshot["messages"][number]): strin
   return row.groupMemberJid || row.fromJid;
 }
 
+// Detection intentionally evaluates every message-like field, not just the visible body.
+// WhatsApp spam often puts the CTA or invite pitch in link-preview metadata, so each
+// database row can produce multiple text candidates. Only the strongest candidate per
+// row is emitted to avoid moderating one physical message multiple times.
 export async function findSuspiciousEntries(
   snapshot: MessageSnapshot,
   options: SpamDetectionOptions = {}
@@ -370,6 +374,10 @@ export class WhatsAppSpamGuard {
   }
 
   async scanOnce(): Promise<ScanResult> {
+    // `lastSeenMessagePk` controls database polling, while `seenFingerprints`
+    // controls process-local duplicate logging/moderation. Keep them separate:
+    // a repeated spam template from a different WhatsApp row should still be a
+    // new event because the fingerprint includes messagePk and messageTimeLocal.
     const snapshot = await fetchRecentMessages({
       afterPk: this.lastSeenMessagePk,
       limit: this.options.limit,

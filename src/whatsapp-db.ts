@@ -15,6 +15,9 @@ function quoteSql(value: string): string {
 }
 
 function buildWhereClause(options: FetchRecentMessagesOptions): string {
+  // Read inbound rows only. This is an important safety boundary: messages sent
+  // by the bot account can be spam examples, but the live scanner should not
+  // moderate the bot's own outbound messages.
   const clauses = ["m.ZISFROMME = 0"];
 
   if (Number.isFinite(options.afterPk)) {
@@ -43,6 +46,8 @@ function buildMessageQuery(options: FetchRecentMessagesOptions): string {
   const whereClause = buildWhereClause(options);
 
   return `
+    -- WhatsApp stores message dates as seconds since Apple's 2001 epoch, so the
+    -- query adds 978307200 to convert to Unix time for readable logs.
     SELECT
       m.Z_PK AS messagePk,
       datetime(m.ZMESSAGEDATE + 978307200, 'unixepoch') AS messageTimeUtc,
