@@ -103,6 +103,8 @@ Important:
 - WhatsApp Desktop signed in on this Mac
 - Read access to the local WhatsApp container
 
+The easiest way to satisfy the Node requirement in this workspace is to start from `/Users/jlukanta/Projects/tracecove` and enter the shared shell with `nix develop`.
+
 ## Usage
 
 Run a one-off scan:
